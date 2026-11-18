@@ -20,6 +20,10 @@
     background: #fff; border-radius: 12px; padding: 10px 14px; font-size: 14px;
     box-shadow: 0 4px 16px rgba(20,33,61,.18);
   }
+  #version {
+    position: fixed; z-index: 5; left: calc(10px + env(safe-area-inset-left)); top: calc(8px + env(safe-area-inset-top));
+    font-size: 11px; font-weight: 700; color: #14213d; opacity: .55; pointer-events: none;
+  }
   #message.cache { display: none; }
   #message { right: auto; max-width: calc(100% - 215px); }
 
@@ -95,6 +99,7 @@
 
 <div id="carte"></div>
 <div id="message">Chargement de la carte…</div>
+<div id="version"></div>
 <div id="hud" aria-label="Tableau de bord">
   <div class="haut">
     <div class="objet" title="Objet en main">
@@ -133,6 +138,21 @@
    (la version précédente, style "maquette", est gardée dans carte-maquette.html)
    Données : OpenStreetMap, tuiles vectorielles OpenFreeMap
    ========================================================= */
+
+/* ---------- 0. Numéro de version et mise à jour automatique ---------- */
+// Les téléphones gardent souvent une ancienne copie de la page en mémoire.
+// À chaque ouverture, on demande au site son numéro de version (fichier version.txt) :
+// s'il est différent de celui de cette page, on recharge la page toute neuve.
+const VERSION = "14";
+document.getElementById("version").textContent = "v" + VERSION;
+fetch("version.txt?t=" + Date.now(), { cache: "no-store" })
+  .then(r => r.ok ? r.text() : "")
+  .then(texte => {
+    const enLigne = texte.trim();
+    const dejaTente = new URLSearchParams(location.search).get("v") === enLigne; // évite de recharger en boucle
+    if (enLigne && enLigne !== VERSION && !dejaTente) location.replace(location.pathname + "?v=" + enLigne);
+  })
+  .catch(() => {});
 
 /* ---------- 1. La caméra (réglages validés) ---------- */
 const CAMERA = {
