@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Carte</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<style>
+  /* La page elle-même ne doit ni zoomer ni défiler : seule la carte bouge. */
+  html, body {
+    position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; overflow: hidden;
+    overscroll-behavior: none; touch-action: none;
+    -webkit-text-size-adjust: 100%; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #14213d;
+  }
+  #carte { position: fixed; inset: 0; background: #ead9c4; }
+  button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  #message {
+    position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 12px; right: 12px; z-index: 5;
+    background: #fff; border-radius: 12px; padding: 10px 14px; font-size: 14px;
+    box-shadow: 0 4px 16px rgba(20,33,61,.18);
+  }
+  #message.cache { display: none; }
+  #message { right: auto; max-width: calc(100% - 215px); }
+
+  /* ---------- Le tableau de bord façon jeu vidéo ---------- */
+  /* Pas de fond : chaque élément flotte sur la carte, avec un contour foncé pour rester lisible. */
+  #hud {
+    --contour: #14213d;
+    position: fixed; z-index: 6; pointer-events: none;
+    top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+    width: 178px; transform-origin: top right;
+    font-family: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif;
+    font-weight: 900; font-variant-numeric: tabular-nums; color: #fff;
+  }
+  #hud .haut { display: flex; gap: 10px; align-items: stretch; }
+  #hud .objet {
+    width: 60px; height: 60px; flex: none; border-radius: 12px;
+    border: 3px solid #fff; outline: 2.5px solid var(--contour);
+    background: rgba(20,33,61,.28);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #hud .droite { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
+  #hud .texte {
+    text-shadow: -2px -2px 0 var(--contour), 2px -2px 0 var(--contour), -2px 2px 0 var(--contour), 2px 2px 0 var(--contour),
+                 0 -2px 0 var(--contour), 0 2px 0 var(--contour), -2px 0 0 var(--contour), 2px 0 0 var(--contour);
+  }
+  #hud .heure { font-size: 25px; line-height: 1; text-align: right; letter-spacing: 1px; }
+  #hud .barre {
+    height: 10px; border-radius: 3px; border: 2.5px solid var(--contour);
+    background: rgba(20,33,61,.35); overflow: hidden;
+  }
+  #hud .barre i { display: block; height: 100%; }
+  #hud .armure i { background: #ffffff; }
+  #hud .vie i { background: #e5484d; }
+  #hud .credits {
+    margin-top: 8px; display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+    font-size: 23px; line-height: 1; letter-spacing: 1.5px; color: #ffd24a;
+  }
+  #hud .piece {
+    width: 20px; height: 20px; border-radius: 50%; flex: none;
+    background: #ffd24a; border: 2.5px solid var(--contour); box-shadow: inset -2px -2px 0 #e0a520;
+  }
+  @media (min-width: 900px) { #hud { transform: scale(1.3); top: 20px; right: 20px; } }
+  #vues {
+    position: fixed; right: calc(12px + env(safe-area-inset-right)); bottom: calc(44px + env(safe-area-inset-bottom)); z-index: 5;
+    display: flex; align-items: center; gap: 6px;
+    background: #14213d; color: #fff; border-radius: 14px; padding: 6px;
+    box-shadow: 0 4px 16px rgba(20,33,61,.25);
+  }
+  #vues button {
+    width: 46px; height: 46px; border: 0; border-radius: 10px;
+    background: #2a3a63; color: #fff; font-size: 22px; font-weight: 700;
+  }
+  #vues button:active { background: #3c4f82; }
+  #localiser {
+    position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(44px + env(safe-area-inset-bottom)); z-index: 5;
+    width: 58px; height: 58px; border: 0; border-radius: 14px; padding: 0;
+    background: #14213d; color: #fff; box-shadow: 0 4px 16px rgba(20,33,61,.25);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #localiser:active { background: #2a3a63; }
+  #localiser.cherche svg { animation: pulser 1s ease-in-out infinite; }
+  #localiser.erreur { background: #b3261e; }
+  @keyframes pulser { 50% { opacity: .35; } }
+  /* Le point qui montre où je suis */
+  .moi {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #2563eb; border: 3px solid #fff;
+    box-shadow: 0 0 0 6px rgba(37,99,235,.25), 0 2px 6px rgba(0,0,0,.35);
+  }
+</style>
+</head>
+<body>
+
+<div id="carte"></div>
+<div id="message">Chargement de la carte…</div>
+<div id="hud" aria-label="Tableau de bord">
+  <div class="haut">
+    <div class="objet" title="Objet en main">
+      <!-- l'objet équipé : ici un sac à dos -->
+      <svg width="38" height="38" viewBox="0 0 24 24" fill="#fff" stroke="#14213d" stroke-width="1.4" stroke-linejoin="round">
+        <path d="M9 5.5V4.5a3 3 0 0 1 6 0v1"/>
+        <path d="M6 9a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z"/>
+        <path d="M9 13.5h6v4.5H9z" fill="#ffd24a"/>
+        <path d="M9 9.5h6" fill="none"/>
+      </svg>
+    </div>
+    <div class="droite">
+      <div class="heure texte" id="hud-heure">00:00</div>
+      <div class="barre armure" title="Armure"><i id="hud-armure" style="width:80%"></i></div>
+      <div class="barre vie" title="Vie"><i id="hud-vie" style="width:55%"></i></div>
+    </div>
+  </div>
+  <div class="credits"><span class="piece"></span><span class="texte" id="hud-credits">00000000</span></div>
+</div>
+<button id="localiser" type="button" aria-label="Centrer la carte sur ma position">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>
+    <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+  </svg>
+</button>
+<div id="vues">
+  <button id="vue-gauche" type="button" aria-label="Vue précédente">◀</button>
+  <button id="vue-droite" type="button" aria-label="Vue suivante">▶</button>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script>
+/* =========================================================
+   STYLE "MAQUETTE" : pelouses tondues, allées beiges,
+   murs en pierre, toits d'ardoise, arbres en volume, ombres douces
+   Données : OpenStreetMap, tuiles vectorielles OpenFreeMap
+   ========================================================= */
+
+/* ---------- 1. La caméra (réglages validés) ---------- */
+const CAMERA = {
+  centre: [2.2790, 48.8610], // Paris 16e [longitude, latitude]
+  zoom: 16,
+  inclinaison: 27,
+  perspective: 4,
+  facteurHauteur: 0.6,
+  vues: [33.69, 123.69, 213.69, 303.69] // les 4 vues isométriques
+};
+
+/* ---------- 2. La palette (à modifier librement !) ---------- */
+const PALETTE = {
+  sol:          "#ead9c4", // trottoirs et cours : beige clair
+  allee:        "#e2ccb2", // allées des jardins
+  route:        "#b3b7c0", // chaussée gris doux
+  routeBord:    "#f3e9da", // bordure claire
+  herbe:        "#93c95b", // pelouse
+  herbeTonte:   "#88bf52", // l'autre bande de tonte
+  terrain:      "#a3d4ae", // terrains de sport
+  terrainLigne: "#f4faf4",
+  eau:          "#7fb3d6",
+  rail:         "#8d8f96",
+  murs:         ["#e3d3b0", "#d9c69f", "#ead9bb", "#d2be96", "#ddc8a6"], // pierre
+  toits:        ["#7f8a9b", "#8a94a3", "#727d8e", "#8c8279", "#7b8697"], // ardoise, zinc, tuile brune
+  tronc:        "#7a5a3c",
+  feuillage:    ["#3f7d3c", "#478842", "#377236"],                        // bas de l'arbre
+  feuillageHaut:["#58994c", "#62a455", "#4e8e45"],                        // haut de l'arbre, plus clair
+  ombre:        "#3c4530"
+};
+
+const message = document.getElementById("message");
+
+const carte = new maplibregl.Map({
+  container: "carte",
+  style: {
+    version: 8,
+    sources: {
+      osm: { type: "vector", url: "https://tiles.openfreemap.org/planet" },
+      arbres: { type: "geojson", data: { type: "FeatureCollection", features: [] } },
+      voitures: { type: "geojson", data: { type: "FeatureCollection", features: [] } }
+    },
+    layers: [{ id: "sol", type: "background", paint: { "background-color": PALETTE.sol } }]
+  },
+  center: CAMERA.centre,
+  zoom: CAMERA.zoom,
+  bearing: CAMERA.vues[0],
+  pitch: CAMERA.inclinaison,
+  minPitch: CAMERA.inclinaison,
+  maxPitch: CAMERA.inclinaison,
+  dragRotate: false,
+  pitchWithRotate: false,
+  touchPitch: false,
+  canvasContextAttributes: { antialias: true }, // bords lisses, comme une illustration
+  attributionControl: { compact: true }
+});
+
+carte.touchZoomRotate.disableRotation();
+carte.keyboard.disableRotation();
+
+carte.on("error", (e) => {
+  message.classList.remove("cache");
+  message.textContent = "Problème de chargement : " + ((e.error && e.error.message) || "erreur inconnue");
+});
+
+carte.on("load", () => {
+  message.classList.add("cache");
+  if (typeof carte.setVerticalFieldOfView === "function") carte.setVerticalFieldOfView(CAMERA.perspective);
+  fabriquerTexturePelouse();
+  poserLesCouches();
+  carte.on("idle", planterLesArbres); // on replante quand la carte a fini de bouger
+  planterLesArbres();
+  carte.on("moveend", () => { ruesARelever = true; });
+  carte.on("idle", () => { if (ruesARelever) installerLesVehicules(); });
+  requestAnimationFrame(animerLesVehicules);
+});
+
+/* ---------- 3. La pelouse tondue en damier ---------- */
+// Un damier de deux verts très proches, tourné pour suivre les vues isométriques.
+function fabriquerTexturePelouse() {
+  const K = 5, L = 26 * K; // une case du damier mesure environ 5 × K points
+  const vert1 = hexa(PALETTE.herbe), vert2 = hexa(PALETTE.herbeTonte);
+  const donnees = new Uint8Array(L * L * 4);
+  for (let y = 0; y < L; y++) {
+    for (let x = 0; x < L; x++) {
+      const a = Math.floor((5 * x - y) / (26 * K)), b = Math.floor((x + 5 * y) / (26 * K));
+      const c = ((a + b) % 2 === 0) ? vert1 : vert2;
+      const i = (y * L + x) * 4;
+      donnees[i] = c[0]; donnees[i + 1] = c[1]; donnees[i + 2] = c[2]; donnees[i + 3] = 255;
+    }
+  }
+  carte.addImage("tex-pelouse", { width: L, height: L, data: donnees });
+}
+
+function hexa(c) { return [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)); }
+
+/* ---------- 4. Les couches de la carte, du sol vers le ciel ---------- */
+function poserLesCouches() {
+  const F = CAMERA.facteurHauteur;
+  const estSurface = ["match", ["geometry-type"], ["Polygon", "MultiPolygon"], true, false];
+  const estLigne = ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false];
+  const pasTunnel = ["!=", ["get", "brunnel"], "tunnel"];
+  const classe = (...noms) => ["match", ["get", "class"], noms, true, false];
+
+  // Largeurs qui doublent à chaque niveau de zoom, comme les vraies distances.
+  const largeur = (aZoom16) => ["interpolate", ["exponential", 2], ["zoom"], 12, aZoom16 / 16, 16, aZoom16, 19, aZoom16 * 8];
+  const largeurRoute = ["match", ["get", "class"],
+    ["motorway", "trunk", "primary"], 1.6, ["secondary", "tertiary"], 1.25, ["service", "track"], 0.55, 1];
+  const fois = (expr, base) => ["interpolate", ["exponential", 2], ["zoom"],
+    12, ["*", expr, base / 16], 16, ["*", expr, base], 19, ["*", expr, base * 8]];
+  // Décalage des ombres : vers la droite et le bas de l'écran, plus long quand on zoome.
+  const decalage = (x, y) => ["interpolate", ["exponential", 2], ["zoom"], 13, ["literal", [x / 8, y / 8]], 16, ["literal", [x, y]], 19, ["literal", [x * 8, y * 8]]];
+
+  // Pelouses, parcs et bois
+  carte.addLayer({ id: "parcs", type: "fill", source: "osm", "source-layer": "park", filter: estSurface,
+    paint: { "fill-pattern": "tex-pelouse" } });
+  carte.addLayer({ id: "pelouses", type: "fill", source: "osm", "source-layer": "landcover",
+    filter: classe("grass", "wood"), paint: { "fill-pattern": "tex-pelouse" } });
+
+  // Terrains de sport, avec un liseré blanc
+  carte.addLayer({ id: "terrains", type: "fill", source: "osm", "source-layer": "landuse",
+    filter: classe("pitch", "track"), paint: { "fill-color": PALETTE.terrain } });
+  carte.addLayer({ id: "terrains-lignes", type: "line", source: "osm", "source-layer": "landuse",
+    filter: classe("pitch", "track"), paint: { "line-color": PALETTE.terrainLigne, "line-width": largeur(1) } });
+
+  // L'eau
+  carte.addLayer({ id: "eau", type: "fill", source: "osm", "source-layer": "water", filter: pasTunnel,
+    paint: { "fill-color": PALETTE.eau } });
+
+  // Places piétonnes et allées
+  carte.addLayer({ id: "places", type: "fill", source: "osm", "source-layer": "transportation", filter: estSurface,
+    paint: { "fill-color": PALETTE.allee } });
+  carte.addLayer({ id: "allees", type: "line", source: "osm", "source-layer": "transportation", minzoom: 14,
+    filter: ["all", estLigne, pasTunnel, classe("path", "pedestrian")],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": PALETTE.allee, "line-width": largeur(4) } });
+
+  // Les routes : bordure claire puis chaussée grise
+  const filtreRoutes = ["all", estLigne, pasTunnel,
+    classe("motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service", "track")];
+  carte.addLayer({ id: "routes-bord", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": PALETTE.routeBord, "line-width": fois(largeurRoute, 14) } });
+  carte.addLayer({ id: "routes", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": PALETTE.route, "line-width": fois(largeurRoute, 11) } });
+
+  // Voies ferrées
+  carte.addLayer({ id: "rails", type: "line", source: "osm", "source-layer": "transportation",
+    filter: ["all", estLigne, pasTunnel, classe("rail", "transit")],
+    paint: { "line-color": PALETTE.rail, "line-width": largeur(2.5) } });
+
+  // ----- Les ombres portées (dessinées à plat, sous les volumes) -----
+  const visible = ["!", ["has", "hide_3d"]];
+  // Astuce : on les dessine comme des volumes de hauteur presque nulle. Ainsi toute la couche
+  // est fondue d'un seul coup : un aplat uniforme, sans contour ni zones plus sombres
+  // là où deux ombres se chevauchent.
+  carte.addLayer({ id: "ombres-batiments", type: "fill-extrusion", source: "osm", "source-layer": "building", minzoom: 14, filter: visible,
+    paint: { "fill-extrusion-color": PALETTE.ombre, "fill-extrusion-opacity": 0.22,
+             "fill-extrusion-height": 0.02, "fill-extrusion-base": 0, "fill-extrusion-vertical-gradient": false,
+             "fill-extrusion-translate": decalage(7, 5), "fill-extrusion-translate-anchor": "viewport" } });
+  carte.addLayer({ id: "ombres-arbres", type: "fill-extrusion", source: "arbres", filter: ["==", ["get", "type"], "ombre"],
+    paint: { "fill-extrusion-color": PALETTE.ombre, "fill-extrusion-opacity": 0.22,
+             "fill-extrusion-height": 0.02, "fill-extrusion-base": 0, "fill-extrusion-vertical-gradient": false,
+             "fill-extrusion-translate": decalage(6, 4), "fill-extrusion-translate-anchor": "viewport" } });
+
+  // ----- Les bâtiments : murs en pierre, toit posé dessus -----
+  const hauteurReelle = ["coalesce", ["get", "render_height"], 10];
+  const hauteur = ["*", F, hauteurReelle];
+  const base = ["*", F, ["coalesce", ["get", "render_min_height"], 0]];
+  const basDuToit = ["max", base, ["-", hauteur, F * 2.5]];
+  const numero = ["%", ["round", hauteurReelle], 5]; // 0 à 4, pour varier pierres et toits
+  const choisir = (liste) => ["match", numero, 0, liste[0], 1, liste[1], 2, liste[2], 3, liste[3], liste[4]];
+
+  carte.addLayer({ id: "murs", type: "fill-extrusion", source: "osm", "source-layer": "building", minzoom: 13, filter: visible,
+    paint: { "fill-extrusion-color": choisir(PALETTE.murs), "fill-extrusion-height": basDuToit,
+             "fill-extrusion-base": base, "fill-extrusion-vertical-gradient": true } });
+  carte.addLayer({ id: "toits", type: "fill-extrusion", source: "osm", "source-layer": "building", minzoom: 13, filter: visible,
+    paint: { "fill-extrusion-color": choisir(PALETTE.toits), "fill-extrusion-height": hauteur,
+             "fill-extrusion-base": basDuToit, "fill-extrusion-vertical-gradient": false } });
+
+  // ----- Les arbres : un tronc et deux étages de feuillage -----
+  carte.addLayer({ id: "arbres", type: "fill-extrusion", source: "arbres", filter: ["!=", ["get", "type"], "ombre"],
+    paint: { "fill-extrusion-color": ["get", "couleur"], "fill-extrusion-height": ["get", "haut"],
+             "fill-extrusion-base": ["get", "bas"], "fill-extrusion-vertical-gradient": false } });
+
+  // ----- Voitures, vélos et trottinettes (visibles seulement quand on zoome de près) -----
+  carte.addLayer({ id: "voitures", type: "fill-extrusion", source: "voitures", minzoom: ZOOM_MIN_VEHICULES,
+    paint: { "fill-extrusion-color": ["get", "couleur"], "fill-extrusion-height": ["get", "haut"],
+             "fill-extrusion-base": ["get", "bas"], "fill-extrusion-vertical-gradient": false } });
+
+  // La lumière éclaire les façades tournées vers nous, pour que la pierre reste claire.
+  carte.setLight({ anchor: "viewport", position: [1.5, 215, 50], intensity: 0.3, color: "#fff8ea" });
+}
+
+/* ---------- 5. Planter les arbres ---------- */
+// OpenStreetMap ne donne pas la position de chaque arbre : on les plante nous-mêmes
+// dans les parcs et les bois, toujours aux mêmes endroits grâce à un "hasard" fixe.
+const PAS_ARBRES = 13;     // distance moyenne entre deux arbres, en mètres
+const MAX_ARBRES = 2500;   // limite pour que la carte reste fluide
+
+function hasard(a, b, graine) {
+  const n = Math.sin(a * 127.1 + b * 311.7 + graine * 74.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function dansLeContour(pt, anneau) {
+  let dedans = false;
+  for (let i = 0, j = anneau.length - 1; i < anneau.length; j = i++) {
+    const [xi, yi] = anneau[i], [xj, yj] = anneau[j];
+    if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) dedans = !dedans;
+  }
+  return dedans;
+}
+
+function dansLaSurface(pt, geometrie) {
+  const polygones = geometrie.type === "Polygon" ? [geometrie.coordinates] : geometrie.coordinates;
+  return polygones.some(p => dansLeContour(pt, p[0]) && !p.slice(1).some(trou => dansLeContour(pt, trou)));
+}
+
+// Un petit polygone à 8 côtés, de rayon donné en mètres.
+function octogone(lng, lat, rayon) {
+  const dLat = rayon / 111320, dLng = rayon / (111320 * Math.cos(lat * Math.PI / 180));
+  const points = [];
+  for (let k = 0; k <= 8; k++) {
+    const angle = k * Math.PI / 4;
+    points.push([lng + dLng * Math.cos(angle), lat + dLat * Math.sin(angle)]);
+  }
+  return { type: "Polygon", coordinates: [points] };
+}
+
+let derniereSignature = "";
+
+function planterLesArbres() {
+  if (carte.getZoom() < 14.5) { majArbres([], "trop-loin"); return; }
+
+  // Les surfaces où poussent des arbres : beaucoup dans les bois, quelques-uns dans les parcs.
+  const zones = [];
+  const ajouter = (couche, filtre, densite) => {
+    carte.querySourceFeatures("osm", { sourceLayer: couche, filter: filtre }).forEach(f => {
+      if (f.geometry.type !== "Polygon" && f.geometry.type !== "MultiPolygon") return;
+      zones.push({ geometrie: f.geometry, densite });
+    });
+  };
+  ajouter("landcover", ["==", ["get", "class"], "wood"], 0.9);
+  ajouter("park", undefined, 0.35);
+  ajouter("landcover", ["==", ["get", "class"], "grass"], 0.3);
+
+  // Bâtiments et terrains de sport : on n'y plante rien.
+  const interdits = [];
+  carte.querySourceFeatures("osm", { sourceLayer: "building" }).forEach(f => interdits.push(f.geometry));
+  carte.querySourceFeatures("osm", { sourceLayer: "landuse", filter: ["match", ["get", "class"], ["pitch", "track"], true, false] })
+    .forEach(f => interdits.push(f.geometry));
+  carte.querySourceFeatures("osm", { sourceLayer: "water" }).forEach(f => interdits.push(f.geometry));
+
+  // Une grille régulière sur la zone visible, chaque arbre étant un peu décalé au hasard.
+  const limites = carte.getBounds();
+  const pasLat = PAS_ARBRES / 111320;
+  const pasLng = PAS_ARBRES / (111320 * Math.cos(CAMERA.centre[1] * Math.PI / 180));
+  const i0 = Math.floor(limites.getWest() / pasLng), i1 = Math.ceil(limites.getEast() / pasLng);
+  const j0 = Math.floor(limites.getSouth() / pasLat), j1 = Math.ceil(limites.getNorth() / pasLat);
+
+  const signature = [i0, i1, j0, j1, zones.length, interdits.length].join("/");
+  if (signature === derniereSignature) return; // rien n'a changé : on ne refait pas le travail
+  if ((i1 - i0) * (j1 - j0) > 400000) { majArbres([], signature); return; }
+
+  const F = CAMERA.facteurHauteur;
+  const formes = [];
+  let compte = 0;
+  for (let i = i0; i <= i1 && compte < MAX_ARBRES; i++) {
+    for (let j = j0; j <= j1 && compte < MAX_ARBRES; j++) {
+      const lng = (i + hasard(i, j, 1) * 0.8) * pasLng;
+      const lat = (j + hasard(i, j, 2) * 0.8) * pasLat;
+      const pt = [lng, lat];
+      const tirage = hasard(i, j, 3);
+      if (!zones.some(z => tirage < z.densite && dansLaSurface(pt, z.geometrie))) continue;
+      if (interdits.some(g => (g.type === "Polygon" || g.type === "MultiPolygon") && dansLaSurface(pt, g))) continue;
+
+      const taille = 0.75 + hasard(i, j, 4) * 0.6;       // chaque arbre a sa taille
+      const teinte = Math.floor(hasard(i, j, 5) * 3);    // et sa nuance de vert
+      const rayon = 4.2 * taille;
+      const h = (m) => m * taille * F * 1.6;             // hauteurs un peu exagérées pour bien voir les arbres
+      formes.push(
+        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "ombre" } },
+        { type: "Feature", geometry: octogone(lng, lat, 0.6), properties: { type: "tronc", bas: 0, haut: h(4), couleur: PALETTE.tronc } },
+        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "feuilles", bas: h(3.5), haut: h(8), couleur: PALETTE.feuillage[teinte] } },
+        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.66), properties: { type: "feuilles", bas: h(8), haut: h(11), couleur: PALETTE.feuillageHaut[teinte] } }
+      );
+      compte++;
+    }
+  }
+  majArbres(formes, signature);
+}
+
+function majArbres(formes, signature) {
+  if (signature === derniereSignature) return;
+  derniereSignature = signature;
+  carte.getSource("arbres").setData({ type: "FeatureCollection", features: formes });
+}
+
+/* ---------- 5 bis. Voitures, vélos et trottinettes ---------- */
+// Un système volontairement simple, pour que rien ne clignote :
+//  - chaque véhicule a SON bout de rue bien droit : une voiture au plus par bout de rue,
+//    et un deux-roues au plus, qui roule sur sa propre file plus près du trottoir (pas de collision) ;
+//  - il fait des allers-retours sans jamais entrer dans les carrefours ni disparaître ;
+//  - on ne les voit que quand on zoome de près ;
+//  - on ne change de véhicules que lorsque l'on déplace la carte.
+const ZOOM_MIN_VEHICULES = 17;   // en dessous de ce zoom, aucun véhicule
+const TYPES_VEHICULES = [
+  // nombre, vitesse en m/s, distance à l'axe de la rue en mètres
+  { type: "voiture",     nombre: 6, vitesse: [6, 9],   ecart: 2.4, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#f4f1ea", "#3c8f5a", "#2b2f3a", "#e07b39"] },
+  { type: "velo",        nombre: 3, vitesse: [3, 4.5], ecart: 4.6, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#9b59d0", "#1fa39a"] },
+  { type: "trottinette", nombre: 3, vitesse: [2.5, 4], ecart: 4.6, couleurs: ["#e07b39", "#3c8f5a", "#d6457a", "#2f6fd6"] }
+];
+const LONGUEUR_MIN_RUE = 25;     // il faut au moins 25 m de rue droite visible pour accueillir un véhicule
+const MARGE_CARREFOUR = 8;       // on fait demi-tour 8 m avant le bout, donc avant le carrefour
+
+const LAT0 = CAMERA.centre[1] * Math.PI / 180;
+const M_PAR_DEG_LAT = 111320;
+const mParDegLng = (lat) => 111320 * Math.cos(lat * Math.PI / 180);
+
+let vehicules = [];
+let ruesARelever = true;
+const animationCoupee = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Vrai si ce point de la carte tombe bien dans l'écran (avec une petite marge sur les bords).
+function aLEcran(pt) {
+  const pixel = carte.project(pt), toile = carte.getCanvas();
+  return pixel.x > 20 && pixel.y > 20 && pixel.x < toile.clientWidth - 20 && pixel.y < toile.clientHeight - 20;
+}
+
+function auHasard(liste) { return liste[Math.floor(Math.random() * liste.length)]; }
+
+// Cherche les bouts de rue bien droits visibles à l'écran : chaque morceau entre deux points
+// consécutifs du tracé est une ligne droite, sans carrefour au milieu.
+function boutsDeRueDroits() {
+  const trouves = new Map();
+  carte.querySourceFeatures("osm", { sourceLayer: "transportation",
+    filter: ["all", ["match", ["get", "class"], ["primary", "secondary", "tertiary", "minor"], true, false], ["!=", ["get", "brunnel"], "tunnel"]]
+  }).forEach(f => {
+    const lignes = f.geometry.type === "LineString" ? [f.geometry.coordinates]
+                 : f.geometry.type === "MultiLineString" ? f.geometry.coordinates : [];
+    lignes.forEach(points => {
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        const milieu = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const k = mParDegLng(milieu[1]);
+        const dx = (b[0] - a[0]) * k, dy = (b[1] - a[1]) * M_PAR_DEG_LAT;
+        const longueur = Math.hypot(dx, dy);
+        if (longueur < LONGUEUR_MIN_RUE) continue;
+        // La même rue arrive souvent en double : on la reconnaît à son milieu.
+        const cle = milieu[0].toFixed(5) + "," + milieu[1].toFixed(5);
+        const rue = { cle, a, milieu, longueur, k, ux: dx / longueur, uy: dy / longueur };
+        if (partieVisible(rue)) trouves.set(cle, rue);
+      }
+    });
+  });
+  return [...trouves.values()];
+}
+
+// Une rue peut dépasser de l'écran : on ne garde que le morceau visible, pour que le véhicule
+// fasse demi-tour avant le bord et reste toujours sous nos yeux.
+// Remplit rue.debut et rue.fin (en mètres depuis le point a). Renvoie faux si le morceau est trop court.
+function partieVisible(rue) {
+  let meilleur = null, depart = null;
+  for (let d = 0; d <= rue.longueur + 4; d += 4) {
+    const dd = Math.min(d, rue.longueur);
+    const visible = d <= rue.longueur && aLEcran([rue.a[0] + dd * rue.ux / rue.k, rue.a[1] + dd * rue.uy / M_PAR_DEG_LAT]);
+    if (visible && depart === null) depart = dd;
+    if (!visible && depart !== null) {
+      const arrivee = Math.min(d - 4, rue.longueur);
+      if (!meilleur || arrivee - depart > meilleur[1] - meilleur[0]) meilleur = [depart, arrivee];
+      depart = null;
+    }
+  }
+  if (!meilleur) return false;
+  // Aux vrais bouts de la rue, on s'arrête avant le carrefour.
+  rue.debut = Math.max(meilleur[0], MARGE_CARREFOUR);
+  rue.fin = Math.min(meilleur[1], rue.longueur - MARGE_CARREFOUR);
+  return rue.fin - rue.debut >= LONGUEUR_MIN_RUE;
+}
+
+// Appelée seulement quand on a déplacé la carte : on garde les véhicules encore visibles,
+// et on en ajoute de nouveaux sur des bouts de rue libres.
+function installerLesVehicules() {
+  ruesARelever = false;
+  if (carte.getZoom() < ZOOM_MIN_VEHICULES) { vehicules = []; dessinerLesVehicules(); return; }
+
+  // Un véhicule reste si son bout de rue est encore assez visible ; on remet alors son trajet à jour.
+  vehicules = vehicules.filter(v => partieVisible(v.rue));
+  vehicules.forEach(v => { v.parcouru = Math.max(v.rue.debut, Math.min(v.rue.fin, v.parcouru)); });
+  const rues = boutsDeRueDroits().sort(() => Math.random() - 0.5);
+  // Deux files par bout de rue : celle des voitures et celle des deux-roues.
+  const file = (type) => type === "voiture" ? "voiture" : "deux-roues";
+  const prises = new Set(vehicules.map(v => file(v.type) + v.rue.cle));
+
+  TYPES_VEHICULES.forEach(modele => {
+    let manque = modele.nombre - vehicules.filter(v => v.type === modele.type).length;
+    for (const rue of rues) {
+      if (manque <= 0) break;
+      const place = file(modele.type) + rue.cle;
+      if (prises.has(place)) continue;
+      prises.add(place);
+      manque--;
+      vehicules.push({
+        type: modele.type, rue, ecart: modele.ecart,
+        couleur: auHasard(modele.couleurs),
+        vitesse: modele.vitesse[0] + Math.random() * (modele.vitesse[1] - modele.vitesse[0]),
+        parcouru: rue.debut + Math.random() * (rue.fin - rue.debut),
+        sens: Math.random() < 0.5 ? 1 : -1,
+        cote: 0 // de quel côté de la rue il roule : glisse doucement vers la droite du sens de marche
+      });
+    }
+  });
+  vehicules.forEach(v => { if (v.cote === 0) v.cote = v.sens; });
+}
+
+// Un rectangle aligné sur la rue. x = le long de la rue, y = en travers (en mètres).
+function boite(v, cx, cy, demiLong, demiLarge, bas, haut, couleur) {
+  const { a, k, ux, uy } = v.rue;
+  const coin = (x, y) => [a[0] + (x * ux - y * uy) / k, a[1] + (x * uy + y * ux) / M_PAR_DEG_LAT];
+  return { type: "Feature",
+    geometry: { type: "Polygon", coordinates: [[coin(cx + demiLong, cy + demiLarge), coin(cx + demiLong, cy - demiLarge),
+      coin(cx - demiLong, cy - demiLarge), coin(cx - demiLong, cy + demiLarge), coin(cx + demiLong, cy + demiLarge)]] },
+    properties: { couleur, bas, haut } };
+}
+
+function dessinerLesVehicules() {
+  const source = carte.getSource("voitures");
+  if (!source) return;
+  const formes = [];
+  vehicules.forEach(v => {
+    const x = v.parcouru;
+    const y = -v.ecart * v.cote; // à droite du sens de marche
+    if (v.type === "voiture") {
+      formes.push(boite(v, x, y, 3.8, 1.8, 0.3, 1.7, v.couleur));       // la carrosserie
+      formes.push(boite(v, x, y, 1.9, 1.55, 1.7, 2.9, "#dfe9f2"));       // l'habitacle, au milieu
+    } else if (v.type === "velo") {
+      formes.push(boite(v, x, y, 1.9, 0.35, 0.2, 1.3, "#2b2f3a"));       // le cadre et les roues
+      formes.push(boite(v, x, y, 0.6, 0.6, 1.3, 3.2, v.couleur));        // le cycliste
+      formes.push(boite(v, x, y, 0.45, 0.45, 3.2, 3.9, "#f1d3b5"));      // la tête
+    } else {
+      formes.push(boite(v, x, y, 1.3, 0.3, 0.2, 0.7, "#2b2f3a"));        // la planche
+      formes.push(boite(v, x + 0.2, y, 0.5, 0.5, 0.7, 3.4, v.couleur));  // la personne debout
+      formes.push(boite(v, x + 0.2, y, 0.4, 0.4, 3.4, 4.1, "#f1d3b5"));  // la tête
+    }
+  });
+  source.setData({ type: "FeatureCollection", features: formes });
+}
+
+let dernierTic = 0;
+function animerLesVehicules(maintenant) {
+  requestAnimationFrame(animerLesVehicules);
+  if (animationCoupee || document.hidden || !vehicules.length) { dernierTic = maintenant; return; }
+  const ecoule = maintenant - dernierTic;
+  if (ecoule < 50) return; // 20 images par seconde suffisent
+  dernierTic = maintenant;
+  const dt = Math.min(ecoule, 200) / 1000;
+
+  vehicules.forEach(v => {
+    const debut = v.rue.debut, fin = v.rue.fin;
+    // On ralentit en approchant du bout, puis on fait demi-tour.
+    const reste = v.sens > 0 ? fin - v.parcouru : v.parcouru - debut;
+    const allure = Math.max(0.2, Math.min(1, reste / 10));
+    v.parcouru += v.sens * v.vitesse * allure * dt;
+    if (v.parcouru >= fin) { v.parcouru = fin; v.sens = -1; }
+    if (v.parcouru <= debut) { v.parcouru = debut; v.sens = 1; }
+    // Le changement de côté après le demi-tour se fait en glissant, pas d'un seul coup.
+    v.cote += Math.max(-dt * 1.5, Math.min(dt * 1.5, v.sens - v.cote));
+  });
+  dessinerLesVehicules();
+}
+
+/* ---------- 6. Les 4 vues isométriques ---------- */
+let vueActuelle = 0;
+
+function allerALaVue(numero) {
+  vueActuelle = (numero + 4) % 4;
+  carte.rotateTo(CAMERA.vues[vueActuelle], { duration: 700 });
+}
+
+document.getElementById("vue-gauche").addEventListener("click", () => allerALaVue(vueActuelle - 1));
+document.getElementById("vue-droite").addEventListener("click", () => allerALaVue(vueActuelle + 1));
+
+/* ---------- Le tableau de bord ---------- */
+// L'heure : celle du téléphone.
+function majHeure() {
+  const d = new Date();
+  document.getElementById("hud-heure").textContent =
+    String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+majHeure();
+setInterval(majHeure, 5000);
+
+// Les crédits : on part de zéro et on gagne 1 crédit par seconde tant que l'app est ouverte.
+// Le total est gardé dans le téléphone, pour le retrouver à la prochaine visite.
+const CREDITS_PAR_SECONDE = 1;
+let credits = 0;
+try { credits = parseInt(localStorage.getItem("credits"), 10) || 0; } catch (e) {}
+
+function afficherCredits() {
+  document.getElementById("hud-credits").textContent = String(credits).padStart(8, "0");
+}
+function sauverCredits() {
+  try { localStorage.setItem("credits", String(credits)); } catch (e) {}
+}
+
+afficherCredits();
+setInterval(() => {
+  if (document.hidden) return; // rien ne tombe quand l'app est en arrière-plan
+  credits += CREDITS_PAR_SECONDE;
+  afficherCredits();
+  if (credits % 5 === 0) sauverCredits();
+}, 1000);
+// On sauvegarde aussi au moment où l'on quitte la page.
+document.addEventListener("visibilitychange", sauverCredits);
+window.addEventListener("pagehide", sauverCredits);
+
+// L'armure (barre blanche) et la vie (barre rouge) : valeurs fixes pour l'instant, de 0 à 100.
+function reglerBarres(armure, vie) {
+  document.getElementById("hud-armure").style.width = armure + "%";
+  document.getElementById("hud-vie").style.width = vie + "%";
+}
+reglerBarres(80, 55);
+
+/* ---------- 7. Empêcher le navigateur de zoomer la page ---------- */
+// Sur iPhone, pincer l'écran ou toucher deux fois agrandit toute la page, boutons compris.
+// On bloque ces gestes : le zoom à deux doigts reste géré par la carte elle-même.
+["gesturestart", "gesturechange", "gestureend"].forEach(geste =>
+  document.addEventListener(geste, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener("touchmove", (e) => {
+  if (e.touches.length > 1 && !e.target.closest("#carte")) e.preventDefault();
+}, { passive: false });
+// Le double appui, lui, est neutralisé par "touch-action: manipulation" sur les boutons.
+
+/* ---------- 8. Me localiser ---------- */
+// Un appui sur la cible : le téléphone donne sa position et la carte s'y déplace.
+const boutonLocaliser = document.getElementById("localiser");
+let marqueurMoi = null;
+
+function dire(texte) {
+  message.textContent = texte;
+  message.classList.remove("cache");
+  setTimeout(() => message.classList.add("cache"), 5000);
+}
+
+boutonLocaliser.addEventListener("click", () => {
+  if (!("geolocation" in navigator) || !window.isSecureContext) {
+    dire("La localisation n'est pas disponible ici (il faut une adresse en https).");
+    return;
+  }
+  boutonLocaliser.classList.remove("erreur");
+  boutonLocaliser.classList.add("cherche");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      boutonLocaliser.classList.remove("cherche");
+      const ici = [pos.coords.longitude, pos.coords.latitude];
+      if (!marqueurMoi) {
+        const point = document.createElement("div");
+        point.className = "moi";
+        marqueurMoi = new maplibregl.Marker({ element: point }).setLngLat(ici).addTo(carte);
+      } else {
+        marqueurMoi.setLngLat(ici);
+      }
+      // On garde la vue isométrique en cours, on change seulement l'endroit.
+      carte.flyTo({ center: ici, zoom: Math.max(carte.getZoom(), 16.5), duration: 1500 });
+    },
+    (err) => {
+      boutonLocaliser.classList.remove("cherche");
+      boutonLocaliser.classList.add("erreur");
+      const messages = {
+        1: "Localisation refusée. Autorisez-la dans les réglages du navigateur.",
+        2: "Position introuvable. Essayez dehors ou près d'une fenêtre.",
+        3: "Le GPS met trop de temps à répondre. Réessayez."
+      };
+      dire(messages[err.code] || "Erreur de localisation.");
+    },
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+  );
+});
+</script>
+</body>
+</html>

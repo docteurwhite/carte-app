@@ -2,5 +2,6 @@
 
 Carte isométrique familiale, construite avec OpenStreetMap, OpenFreeMap et MapLibre GL JS.
 
-- `index.html` : style "maquette" (pelouses, arbres en volume, ombres), version courante
-- `carte-blocs.html` : essai précédent, style "blocs" pixelisé
+- `index.html` : version courante, style "cubes" (couleurs franches, immeubles en blocs, arbres cubiques)
+- `carte-maquette.html` : version précédente, style "maquette", gardée pour revenir en arrière
+- `carte-blocs.html` : premier essai, style "blocs" pixelisé
