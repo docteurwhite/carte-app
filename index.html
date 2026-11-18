@@ -143,7 +143,7 @@
 // Les téléphones gardent souvent une ancienne copie de la page en mémoire.
 // À chaque ouverture, on demande au site son numéro de version (fichier version.txt) :
 // s'il est différent de celui de cette page, on recharge la page toute neuve.
-const VERSION = "15";
+const VERSION = "16";
 document.getElementById("version").textContent = "v" + VERSION;
 fetch("version.txt?t=" + Date.now(), { cache: "no-store" })
   .then(r => r.ok ? r.text() : "")
@@ -229,8 +229,15 @@ carte.on("load", () => {
   poserLesCouches();
   carte.on("idle", planterLesArbres); // on replante quand la carte a fini de bouger
   planterLesArbres();
-  carte.on("moveend", () => { ruesARelever = true; });
+  // Au chargement : dès que la carte est prête. Ensuite : un court instant après chaque déplacement
+  // (et une seconde fois un peu plus tard, le temps que les nouvelles rues soient chargées).
   carte.on("idle", () => { if (ruesARelever) installerLesVehicules(); });
+  let attente1 = null, attente2 = null;
+  carte.on("moveend", () => {
+    clearTimeout(attente1); clearTimeout(attente2);
+    attente1 = setTimeout(installerLesVehicules, 400);
+    attente2 = setTimeout(installerLesVehicules, 2500);
+  });
   requestAnimationFrame(animerLesVehicules);
 });
 
@@ -469,9 +476,9 @@ function majArbres(formes, signature) {
 //  - chaque véhicule a SON bout de rue bien droit : une voiture au plus par bout de rue,
 //    et un deux-roues au plus, qui roule sur sa propre file plus près du trottoir (pas de collision) ;
 //  - il fait des allers-retours sans jamais entrer dans les carrefours ni disparaître ;
-//  - on ne les voit que quand on zoome de près ;
+//  - on les voit dès le zoom de départ, et ils disparaissent quand on dézoome ;
 //  - on ne change de véhicules que lorsque l'on déplace la carte.
-const ZOOM_MIN_VEHICULES = 17;   // en dessous de ce zoom, aucun véhicule
+const ZOOM_MIN_VEHICULES = 15.8; // visibles dès le zoom de départ (16) ; ils disparaissent si on dézoome
 const TYPES_VEHICULES = [
   // nombre, vitesse en m/s, distance à l'axe de la rue en mètres
   { type: "voiture",     nombre: 6, vitesse: [6, 9],   ecart: 2.4, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#f4f1ea", "#3c8f5a", "#2b2f3a", "#e07b39"] },
@@ -595,20 +602,25 @@ function dessinerLesVehicules() {
   const source = carte.getSource("voitures");
   if (!source) return;
   const formes = [];
+  // Vus de loin, les véhicules seraient minuscules : on les grossit pour qu'ils gardent
+  // à peu près la même taille à l'écran (jusqu'à 1,9 fois plus gros au zoom de départ).
+  const grossi = Math.max(1, Math.min(1.9, Math.pow(2, 17.2 - carte.getZoom())));
+  const boiteV = (v, cx, cy, dl, dw, bas, haut, couleur) =>
+    boite(v, cx, cy, dl * grossi, dw * grossi, bas * grossi, haut * grossi, couleur);
   vehicules.forEach(v => {
     const x = v.parcouru;
-    const y = -v.ecart * v.cote; // à droite du sens de marche
+    const y = -v.ecart * v.cote * Math.min(grossi, 1.5); // à droite du sens de marche
     if (v.type === "voiture") {
-      formes.push(boite(v, x, y, 3.8, 1.8, 0.3, 1.7, v.couleur));       // la carrosserie
-      formes.push(boite(v, x, y, 1.9, 1.55, 1.7, 2.9, "#dfe9f2"));       // l'habitacle, au milieu
+      formes.push(boiteV(v, x, y, 3.8, 1.8, 0.3, 1.7, v.couleur));       // la carrosserie
+      formes.push(boiteV(v, x, y, 1.9, 1.55, 1.7, 2.9, "#dfe9f2"));       // l'habitacle, au milieu
     } else if (v.type === "velo") {
-      formes.push(boite(v, x, y, 1.9, 0.35, 0.2, 1.3, "#2b2f3a"));       // le cadre et les roues
-      formes.push(boite(v, x, y, 0.6, 0.6, 1.3, 3.2, v.couleur));        // le cycliste
-      formes.push(boite(v, x, y, 0.45, 0.45, 3.2, 3.9, "#f1d3b5"));      // la tête
+      formes.push(boiteV(v, x, y, 1.9, 0.35, 0.2, 1.3, "#2b2f3a"));       // le cadre et les roues
+      formes.push(boiteV(v, x, y, 0.6, 0.6, 1.3, 3.2, v.couleur));        // le cycliste
+      formes.push(boiteV(v, x, y, 0.45, 0.45, 3.2, 3.9, "#f1d3b5"));      // la tête
     } else {
-      formes.push(boite(v, x, y, 1.3, 0.3, 0.2, 0.7, "#2b2f3a"));        // la planche
-      formes.push(boite(v, x + 0.2, y, 0.5, 0.5, 0.7, 3.4, v.couleur));  // la personne debout
-      formes.push(boite(v, x + 0.2, y, 0.4, 0.4, 3.4, 4.1, "#f1d3b5"));  // la tête
+      formes.push(boiteV(v, x, y, 1.3, 0.3, 0.2, 0.7, "#2b2f3a"));        // la planche
+      formes.push(boiteV(v, x + 0.2 * grossi, y, 0.5, 0.5, 0.7, 3.4, v.couleur));  // la personne debout
+      formes.push(boiteV(v, x + 0.2 * grossi, y, 0.4, 0.4, 3.4, 4.1, "#f1d3b5"));  // la tête
     }
   });
   source.setData({ type: "FeatureCollection", features: formes });
