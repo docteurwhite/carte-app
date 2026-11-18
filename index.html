@@ -143,7 +143,7 @@
 // Les téléphones gardent souvent une ancienne copie de la page en mémoire.
 // À chaque ouverture, on demande au site son numéro de version (fichier version.txt) :
 // s'il est différent de celui de cette page, on recharge la page toute neuve.
-const VERSION = "16";
+const VERSION = "17";
 document.getElementById("version").textContent = "v" + VERSION;
 fetch("version.txt?t=" + Date.now(), { cache: "no-store" })
   .then(r => r.ok ? r.text() : "")
@@ -168,8 +168,9 @@ const CAMERA = {
 const PALETTE = {
   sol:          "#ead9c4", // trottoirs et cours : beige clair
   allee:        "#e2ccb2", // allées des jardins
-  route:        "#b3b7c0", // chaussée gris doux
-  routeBord:    "#f3e9da", // bordure claire
+  route:        "#858b95", // chaussée : bitume gris
+  trottoir:     "#c6c6c4", // trottoir parisien : asphalte gris clair
+  routeBord:    "#ebe8e1", // bordure de trottoir en granit clair
   marquage:     "#e6e8ec", // pointillés au milieu des grandes rues
   herbe:        "#93c95b", // pelouse
   herbeTonte:   "#88bf52", // l'autre bande de tonte
@@ -304,16 +305,21 @@ function poserLesCouches() {
   // Les routes : bordure claire puis chaussée grise
   const filtreRoutes = ["all", estLigne, pasTunnel,
     classe("motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service", "track")];
+  // De l'extérieur vers l'intérieur : le trottoir, sa bordure de granit, puis la chaussée.
+  // Les largeurs sont proches de la réalité, pour que le trottoir reste visible entre la rue et les façades.
+  carte.addLayer({ id: "trottoirs", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": PALETTE.trottoir, "line-width": fois(largeurRoute, 8.8) } });
   carte.addLayer({ id: "routes-bord", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": PALETTE.routeBord, "line-width": fois(largeurRoute, 14) } });
+    paint: { "line-color": PALETTE.routeBord, "line-width": fois(largeurRoute, 5.7) } });
   carte.addLayer({ id: "routes", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": PALETTE.route, "line-width": fois(largeurRoute, 11) } });
+    paint: { "line-color": PALETTE.route, "line-width": fois(largeurRoute, 4.9) } });
   // Pointillés au milieu des grandes rues
   carte.addLayer({ id: "routes-marquage", type: "line", source: "osm", "source-layer": "transportation", minzoom: 15,
     filter: ["all", estLigne, pasTunnel, classe("primary", "secondary", "tertiary", "trunk")],
-    paint: { "line-color": PALETTE.marquage, "line-width": largeur(0.9), "line-dasharray": [5, 5] } });
+    paint: { "line-color": PALETTE.marquage, "line-width": largeur(0.5), "line-dasharray": [6, 6] } });
 
   // Voies ferrées
   carte.addLayer({ id: "rails", type: "line", source: "osm", "source-layer": "transportation",
@@ -473,17 +479,16 @@ function majArbres(formes, signature) {
 
 /* ---------- 5 bis. Voitures, vélos et trottinettes ---------- */
 // Un système volontairement simple, pour que rien ne clignote :
-//  - chaque véhicule a SON bout de rue bien droit : une voiture au plus par bout de rue,
-//    et un deux-roues au plus, qui roule sur sa propre file plus près du trottoir (pas de collision) ;
+//  - chaque véhicule a SON bout de rue bien droit, et il est le seul dessus (pas de collision) ;
 //  - il fait des allers-retours sans jamais entrer dans les carrefours ni disparaître ;
 //  - on les voit dès le zoom de départ, et ils disparaissent quand on dézoome ;
 //  - on ne change de véhicules que lorsque l'on déplace la carte.
 const ZOOM_MIN_VEHICULES = 15.8; // visibles dès le zoom de départ (16) ; ils disparaissent si on dézoome
 const TYPES_VEHICULES = [
   // nombre, vitesse en m/s, distance à l'axe de la rue en mètres
-  { type: "voiture",     nombre: 6, vitesse: [6, 9],   ecart: 2.4, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#f4f1ea", "#3c8f5a", "#2b2f3a", "#e07b39"] },
-  { type: "velo",        nombre: 3, vitesse: [3, 4.5], ecart: 4.6, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#9b59d0", "#1fa39a"] },
-  { type: "trottinette", nombre: 3, vitesse: [2.5, 4], ecart: 4.6, couleurs: ["#e07b39", "#3c8f5a", "#d6457a", "#2f6fd6"] }
+  { type: "voiture",     nombre: 6, vitesse: [6, 9],   ecart: 2.0, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#f4f1ea", "#3c8f5a", "#2b2f3a", "#e07b39"] },
+  { type: "velo",        nombre: 3, vitesse: [3, 4.5], ecart: 2.6, couleurs: ["#e5484d", "#2f6fd6", "#f2b632", "#9b59d0", "#1fa39a"] },
+  { type: "trottinette", nombre: 3, vitesse: [2.5, 4], ecart: 2.6, couleurs: ["#e07b39", "#3c8f5a", "#d6457a", "#2f6fd6"] }
 ];
 const LONGUEUR_MIN_RUE = 25;     // il faut au moins 25 m de rue droite visible pour accueillir un véhicule
 const MARGE_CARREFOUR = 8;       // on fait demi-tour 8 m avant le bout, donc avant le carrefour
@@ -563,8 +568,7 @@ function installerLesVehicules() {
   vehicules = vehicules.filter(v => partieVisible(v.rue));
   vehicules.forEach(v => { v.parcouru = Math.max(v.rue.debut, Math.min(v.rue.fin, v.parcouru)); });
   const rues = boutsDeRueDroits().sort(() => Math.random() - 0.5);
-  // Deux files par bout de rue : celle des voitures et celle des deux-roues.
-  const file = (type) => type === "voiture" ? "voiture" : "deux-roues";
+  const file = (type) => ""; // la chaussée est étroite : un seul véhicule par bout de rue
   const prises = new Set(vehicules.map(v => file(v.type) + v.rue.cle));
 
   TYPES_VEHICULES.forEach(modele => {
@@ -603,16 +607,16 @@ function dessinerLesVehicules() {
   if (!source) return;
   const formes = [];
   // Vus de loin, les véhicules seraient minuscules : on les grossit pour qu'ils gardent
-  // à peu près la même taille à l'écran (jusqu'à 1,9 fois plus gros au zoom de départ).
-  const grossi = Math.max(1, Math.min(1.9, Math.pow(2, 17.2 - carte.getZoom())));
+  // à peu près la même taille à l'écran (jusqu'à 1,4 fois plus gros au zoom de départ).
+  const grossi = Math.max(1, Math.min(1.4, Math.pow(2, 17.2 - carte.getZoom())));
   const boiteV = (v, cx, cy, dl, dw, bas, haut, couleur) =>
     boite(v, cx, cy, dl * grossi, dw * grossi, bas * grossi, haut * grossi, couleur);
   vehicules.forEach(v => {
     const x = v.parcouru;
-    const y = -v.ecart * v.cote * Math.min(grossi, 1.5); // à droite du sens de marche
+    const y = -v.ecart * v.cote; // à droite du sens de marche
     if (v.type === "voiture") {
-      formes.push(boiteV(v, x, y, 3.8, 1.8, 0.3, 1.7, v.couleur));       // la carrosserie
-      formes.push(boiteV(v, x, y, 1.9, 1.55, 1.7, 2.9, "#dfe9f2"));       // l'habitacle, au milieu
+      formes.push(boiteV(v, x, y, 3.2, 1.45, 0.3, 1.5, v.couleur));       // la carrosserie
+      formes.push(boiteV(v, x, y, 1.6, 1.25, 1.5, 2.5, "#dfe9f2"));       // l'habitacle, au milieu
     } else if (v.type === "velo") {
       formes.push(boiteV(v, x, y, 1.9, 0.35, 0.2, 1.3, "#2b2f3a"));       // le cadre et les roues
       formes.push(boiteV(v, x, y, 0.6, 0.6, 1.3, 3.2, v.couleur));        // le cycliste
