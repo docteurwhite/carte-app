@@ -26,12 +26,34 @@
   }
   #vues button:active { background: #3c4f82; }
   #vues span { min-width: 58px; text-align: center; font-size: 14px; font-weight: 700; }
+  #localiser {
+    position: absolute; left: 12px; bottom: 44px; z-index: 5;
+    width: 58px; height: 58px; border: 0; border-radius: 14px; padding: 0;
+    background: #14213d; color: #fff; box-shadow: 0 4px 16px rgba(20,33,61,.25);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #localiser:active { background: #2a3a63; }
+  #localiser.cherche svg { animation: pulser 1s ease-in-out infinite; }
+  #localiser.erreur { background: #b3261e; }
+  @keyframes pulser { 50% { opacity: .35; } }
+  /* Le point qui montre où je suis */
+  .moi {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #2563eb; border: 3px solid #fff;
+    box-shadow: 0 0 0 6px rgba(37,99,235,.25), 0 2px 6px rgba(0,0,0,.35);
+  }
 </style>
 </head>
 <body>
 
 <div id="carte"></div>
 <div id="message">Chargement de la carte…</div>
+<button id="localiser" type="button" aria-label="Centrer la carte sur ma position">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>
+    <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+  </svg>
+</button>
 <div id="vues">
   <button id="vue-gauche" type="button" aria-label="Vue précédente">◀</button>
   <span id="vue-numero">Vue 1/4</span>
@@ -347,6 +369,52 @@ function allerALaVue(numero) {
 
 document.getElementById("vue-gauche").addEventListener("click", () => allerALaVue(vueActuelle - 1));
 document.getElementById("vue-droite").addEventListener("click", () => allerALaVue(vueActuelle + 1));
+
+/* ---------- 7. Me localiser ---------- */
+// Un appui sur la cible : le téléphone donne sa position et la carte s'y déplace.
+const boutonLocaliser = document.getElementById("localiser");
+let marqueurMoi = null;
+
+function dire(texte) {
+  message.textContent = texte;
+  message.classList.remove("cache");
+  setTimeout(() => message.classList.add("cache"), 5000);
+}
+
+boutonLocaliser.addEventListener("click", () => {
+  if (!("geolocation" in navigator) || !window.isSecureContext) {
+    dire("La localisation n'est pas disponible ici (il faut une adresse en https).");
+    return;
+  }
+  boutonLocaliser.classList.remove("erreur");
+  boutonLocaliser.classList.add("cherche");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      boutonLocaliser.classList.remove("cherche");
+      const ici = [pos.coords.longitude, pos.coords.latitude];
+      if (!marqueurMoi) {
+        const point = document.createElement("div");
+        point.className = "moi";
+        marqueurMoi = new maplibregl.Marker({ element: point }).setLngLat(ici).addTo(carte);
+      } else {
+        marqueurMoi.setLngLat(ici);
+      }
+      // On garde la vue isométrique en cours, on change seulement l'endroit.
+      carte.flyTo({ center: ici, zoom: Math.max(carte.getZoom(), 16.5), duration: 1500 });
+    },
+    (err) => {
+      boutonLocaliser.classList.remove("cherche");
+      boutonLocaliser.classList.add("erreur");
+      const messages = {
+        1: "Localisation refusée. Autorisez-la dans les réglages du navigateur.",
+        2: "Position introuvable. Essayez dehors ou près d'une fenêtre.",
+        3: "Le GPS met trop de temps à répondre. Réessayez."
+      };
+      dire(messages[err.code] || "Erreur de localisation.");
+    },
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+  );
+});
 </script>
 </body>
 </html>
