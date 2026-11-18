@@ -13,7 +13,7 @@
     -webkit-text-size-adjust: 100%; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #14213d;
   }
-  #carte { position: fixed; inset: 0; background: #e9e4d4; }
+  #carte { position: fixed; inset: 0; background: #ead9c4; }
   button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   #message {
     position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 12px; right: 12px; z-index: 5;
@@ -133,8 +133,8 @@
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script>
 /* =========================================================
-   STYLE "CUBES" : couleurs franches, immeubles en blocs,
-   arbres cubiques, routes foncées, ombres nettes
+   STYLE "CUBES RÉALISTE" : immeubles en blocs par paliers, ombres nettes,
+   couleurs réalistes (pierre, ardoise, pelouse), arbres en boules
    (la version précédente, style "maquette", est gardée dans carte-maquette.html)
    Données : OpenStreetMap, tuiles vectorielles OpenFreeMap
    ========================================================= */
@@ -143,7 +143,7 @@
 // Les téléphones gardent souvent une ancienne copie de la page en mémoire.
 // À chaque ouverture, on demande au site son numéro de version (fichier version.txt) :
 // s'il est différent de celui de cette page, on recharge la page toute neuve.
-const VERSION = "14";
+const VERSION = "15";
 document.getElementById("version").textContent = "v" + VERSION;
 fetch("version.txt?t=" + Date.now(), { cache: "no-store" })
   .then(r => r.ok ? r.text() : "")
@@ -166,24 +166,23 @@ const CAMERA = {
 
 /* ---------- 2. La palette (à modifier librement !) ---------- */
 const PALETTE = {
-  sol:          "#e9e4d4", // trottoirs et cours : clair
-  allee:        "#f3e6bd", // allées des jardins
-  route:        "#4b5160", // chaussée ardoise foncée
-  routeBord:    "#5d6475", // bord de chaussée, un ton plus clair
-  marquage:     "#8d95a8", // pointillés au milieu des grandes rues
-  herbe:        "#a6dc54", // pelouse vert vif
-  herbeTonte:   "#9bd24a", // l'autre bande
-  terrain:      "#7fd3a0", // terrains de sport
+  sol:          "#ead9c4", // trottoirs et cours : beige clair
+  allee:        "#e2ccb2", // allées des jardins
+  route:        "#b3b7c0", // chaussée gris doux
+  routeBord:    "#f3e9da", // bordure claire
+  marquage:     "#e6e8ec", // pointillés au milieu des grandes rues
+  herbe:        "#93c95b", // pelouse
+  herbeTonte:   "#88bf52", // l'autre bande de tonte
+  terrain:      "#a3d4ae", // terrains de sport
   terrainLigne: "#f4faf4",
-  eau:          "#62c4f4", // eau bleu franc
-  rail:         "#6d5a6e",
-  // Les immeubles sont des blocs de couleurs franches, murs et toits assortis deux à deux
-  murs:         ["#f0c9a0", "#b9b3d9", "#9fd0e6", "#f2a98f", "#e9e1c4"],
-  toits:        ["#fbe3c4", "#d8d4f0", "#c6e8f6", "#fbcdb9", "#fbf6e2"],
-  tronc:        "#8a5a3c",
-  feuillage:    ["#5f9420", "#588c1c", "#689d26"],                        // bas du cube de feuilles
-  feuillageHaut:["#7db02c", "#75a827", "#86ba33"],                        // haut du cube, plus clair
-  ombre:        "#2a2f45"
+  eau:          "#7fb3d6",
+  rail:         "#8d8f96",
+  murs:         ["#e3d3b0", "#d9c69f", "#ead9bb", "#d2be96", "#ddc8a6"], // pierre
+  toits:        ["#7f8a9b", "#8a94a3", "#727d8e", "#8c8279", "#7b8697"], // ardoise, zinc, tuile brune
+  tronc:        "#7a5a3c",
+  feuillage:    ["#3f7d3c", "#478842", "#377236"],                        // bas de la boule de feuilles
+  feuillageHaut:["#58994c", "#62a455", "#4e8e45"],                        // haut de la boule, plus clair
+  ombre:        "#3c4530"
 };
 
 // Un étage de bloc = 4 mètres : les hauteurs sont arrondies à ce palier, pour un effet "cubes".
@@ -244,7 +243,7 @@ function fabriquerTexturePelouse() {
   for (let y = 0; y < L; y++) {
     for (let x = 0; x < L; x++) {
       const a = Math.floor((5 * x - y) / (26 * K)), b = Math.floor((x + 5 * y) / (26 * K));
-      const c = (((a % 2) + 2) % 2 === 0) ? vert1 : vert2; // des bandes, dans le sens d'une des vues
+      const c = ((((a + b) % 2) + 2) % 2 === 0) ? vert1 : vert2; // un damier de tonte
       const i = (y * L + x) * 4;
       donnees[i] = c[0]; donnees[i + 1] = c[1]; donnees[i + 2] = c[2]; donnees[i + 3] = 255;
     }
@@ -384,13 +383,12 @@ function dansLaSurface(pt, geometrie) {
 
 // Un petit polygone à 8 côtés, de rayon donné en mètres.
 function octogone(lng, lat, rayon) {
-  // Dans ce style, les arbres sont des cubes : un carré, tourné pour faire face aux 4 vues.
-  const tourne = -CAMERA.vues[0] * Math.PI / 180;
+  // Un rond (12 côtés suffisent pour qu'il paraisse bien rond).
   const dLat = rayon / 111320, dLng = rayon / (111320 * Math.cos(lat * Math.PI / 180));
   const points = [];
-  for (let k = 0; k <= 4; k++) {
-    const angle = tourne + Math.PI / 4 + k * Math.PI / 2;
-    points.push([lng + dLng * Math.SQRT2 * Math.cos(angle), lat + dLat * Math.SQRT2 * Math.sin(angle)]);
+  for (let k = 0; k <= 12; k++) {
+    const angle = k * Math.PI / 6;
+    points.push([lng + dLng * Math.cos(angle), lat + dLat * Math.sin(angle)]);
   }
   return { type: "Polygon", coordinates: [points] };
 }
@@ -444,13 +442,15 @@ function planterLesArbres() {
 
       const taille = 0.75 + hasard(i, j, 4) * 0.6;       // chaque arbre a sa taille
       const teinte = Math.floor(hasard(i, j, 5) * 3);    // et sa nuance de vert
-      const rayon = 3.6 * taille;
+      const rayon = 4.0 * taille;
       const h = (m) => m * taille * F * 1.6;             // hauteurs un peu exagérées pour bien voir les arbres
       formes.push(
         { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "ombre" } },
-        { type: "Feature", geometry: octogone(lng, lat, 0.9), properties: { type: "tronc", bas: 0, haut: h(3), couleur: PALETTE.tronc } },
-        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "feuilles", bas: h(3), haut: h(6.5), couleur: PALETTE.feuillage[teinte] } },
-        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "feuilles", bas: h(6.5), haut: h(6.5 + 2 + 5 * hasard(i, j, 6)), couleur: PALETTE.feuillageHaut[teinte] } }
+        { type: "Feature", geometry: octogone(lng, lat, 0.7), properties: { type: "tronc", bas: 0, haut: h(3.5), couleur: PALETTE.tronc } },
+        // La boule : trois rondelles empilées, la plus large au milieu.
+        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.72), properties: { type: "feuilles", bas: h(3), haut: h(4.6), couleur: PALETTE.feuillage[teinte] } },
+        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "feuilles", bas: h(4.6), haut: h(8), couleur: PALETTE.feuillage[teinte] } },
+        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.7), properties: { type: "feuilles", bas: h(8), haut: h(9.6), couleur: PALETTE.feuillageHaut[teinte] } }
       );
       compte++;
     }
