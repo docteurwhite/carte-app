@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carte blocs, Paris</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #14213d; }
+  #carte { position: absolute; inset: 0; background: #cdc8be; }
+  /* En mode pixels, la carte est dessinée en petit puis agrandie avec des pixels nets. */
+  #carte canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  #message {
+    position: absolute; top: 12px; left: 12px; right: 60px; z-index: 5;
+    background: #fff; border-radius: 12px; padding: 10px 14px; font-size: 14px;
+    box-shadow: 0 4px 16px rgba(20,33,61,.18);
+  }
+  #message.cache { display: none; }
+  #vues {
+    position: absolute; right: 12px; bottom: 44px; z-index: 5;
+    display: flex; align-items: center; gap: 8px;
+    background: #14213d; color: #fff; border-radius: 14px; padding: 6px;
+    box-shadow: 0 4px 16px rgba(20,33,61,.25);
+  }
+  #vues button {
+    width: 46px; height: 46px; border: 0; border-radius: 10px;
+    background: #2a3a63; color: #fff; font-size: 22px; font-weight: 700;
+  }
+  #vues button:active { background: #3c4f82; }
+  #vues span { min-width: 58px; text-align: center; font-size: 14px; font-weight: 700; }
+  #pixels {
+    position: absolute; left: 12px; bottom: 44px; z-index: 5;
+    border: 0; border-radius: 12px; padding: 10px 14px; font-size: 14px; font-weight: 700;
+    background: #14213d; color: #fff; box-shadow: 0 4px 16px rgba(20,33,61,.25);
+  }
+</style>
+</head>
+<body>
+
+<div id="carte"></div>
+<div id="message">Chargement de la carte…</div>
+<button id="pixels" type="button">Pixels : oui</button>
+<div id="vues">
+  <button id="vue-gauche" type="button" aria-label="Vue précédente">◀</button>
+  <span id="vue-numero">Vue 1/4</span>
+  <button id="vue-droite" type="button" aria-label="Vue suivante">▶</button>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script>
+/* =========================================================
+   STYLE "BLOCS", palette d'une rue parisienne haussmannienne
+   Données : OpenStreetMap, tuiles vectorielles OpenFreeMap
+   ========================================================= */
+
+/* ---------- 1. La caméra (réglages validés) ---------- */
+const CAMERA = {
+  centre: [2.2790, 48.8610], // Paris 16e [longitude, latitude]
+  zoom: 16,
+  inclinaison: 27,           // figée
+  // Les 4 vues isométriques : la même carte vue depuis ses 4 coins (un quart de tour entre chaque).
+  // 33,7° au lieu de 34° : c'est l'angle exact qui permet au quadrillage du sol de tomber juste.
+  vues: [33.69, 123.69, 213.69, 303.69],
+  perspective: 4,            // effet isométrique
+  facteurHauteur: 0.6
+};
+
+/* ---------- 2. La palette parisienne (à modifier librement !) ---------- */
+const PALETTE = {
+  trottoir:     "#cdc8be", // dalles de granit gris clair
+  trottoirJoint:"#bdb8ad",
+  bordure:      "#e4e0d6", // bordure de trottoir en granit
+  chaussee:     "#55585d", // bitume
+  chausseeGrain:"#4b4e53",
+  marquage:     "#e9e6dc", // lignes blanches
+  allee:        "#d9c9a0", // allées en stabilisé des jardins parisiens
+  herbe:        "#6f9c4e",
+  herbeFoncee:  "#5f8a41",
+  bois:         "#4f7d3c",
+  eau:          "#5d8f96", // la Seine, plutôt verte que bleue
+  eauClaire:    "#6fa0a6",
+  rail:         "#3d3f43",
+  // Façades : pierre de taille, du plus clair au plus doré, et un peu de brique
+  pierres:      ["#e6dabf", "#dccdab", "#ece2cb", "#d3c29c", "#c8a58c"],
+  // Toits : zinc gris-bleu, ardoise, et quelques toits-terrasses en pierre
+  zinc:         "#8fa6ba",
+  zincClair:    "#a3b6c6",
+  ardoise:      "#6b7c8e",
+  terrasse:     "#d8ccb0"
+};
+
+// Un étage de bloc = 4 mètres : toutes les hauteurs sont arrondies à ce palier.
+const PALIER = 4;
+// Mode pixels : taille d'un "gros pixel" en points d'écran (plus grand = plus pixelisé).
+const TAILLE_PIXEL = 1.4;
+// On arrondit à un nombre entier de vrais pixels du téléphone pour que tous les carrés soient identiques.
+const DPR = window.devicePixelRatio || 1;
+const RESOLUTION_PIXELS = DPR / Math.max(2, Math.round(TAILLE_PIXEL * DPR));
+
+const message = document.getElementById("message");
+let modePixels = true;
+
+const carte = new maplibregl.Map({
+  container: "carte",
+  style: {
+    version: 8,
+    sources: { osm: { type: "vector", url: "https://tiles.openfreemap.org/planet" } },
+    layers: [{ id: "sol", type: "background", paint: { "background-color": PALETTE.trottoir } }]
+  },
+  center: CAMERA.centre,
+  zoom: CAMERA.zoom,
+  bearing: CAMERA.vues[0],
+  dragRotate: false,          // on ne tourne plus la carte à la main : seulement les 4 vues
+  pitchWithRotate: false,
+  touchPitch: false,
+  pitch: CAMERA.inclinaison,
+  minPitch: CAMERA.inclinaison,
+  maxPitch: CAMERA.inclinaison,
+  pixelRatio: RESOLUTION_PIXELS,
+  attributionControl: { compact: true }
+});
+
+// Sur téléphone, on garde le zoom à deux doigts mais pas la rotation.
+carte.touchZoomRotate.disableRotation();
+carte.keyboard.disableRotation();
+
+carte.on("error", (e) => {
+  message.classList.remove("cache");
+  message.textContent = "Problème de chargement : " + ((e.error && e.error.message) || "erreur inconnue");
+});
+
+carte.on("load", () => {
+  message.classList.add("cache");
+  if (typeof carte.setVerticalFieldOfView === "function") carte.setVerticalFieldOfView(CAMERA.perspective);
+  fabriquerTextures();
+  poserLesCouches();
+});
+
+/* ---------- 3. Les textures 16 × 16 pixels, dessinées en code ---------- */
+// Chaque texture est une grille de 16 × 16 cases : la fonction dit la couleur de chaque case.
+function texture(nom, couleurDeLaCase, T = 16, AGRANDI = 4) {
+  const L = T * AGRANDI; // chaque case devient un carré net de AGRANDI × AGRANDI points
+  const donnees = new Uint8Array(L * L * 4);
+  for (let y = 0; y < L; y++) {
+    for (let x = 0; x < L; x++) {
+      const [r, v, b] = hexa(couleurDeLaCase(Math.floor(x / AGRANDI), Math.floor(y / AGRANDI)));
+      const i = (y * L + x) * 4;
+      donnees[i] = r; donnees[i + 1] = v; donnees[i + 2] = b; donnees[i + 3] = 255;
+    }
+  }
+  carte.addImage(nom, { width: L, height: L, data: donnees });
+}
+
+// Le quadrillage du sol. Il est tourné pour apparaître en losanges dans les 4 vues,
+// comme le sol d'un jeu isométrique. COTE règle la taille des dalles, TRAIT l'épaisseur du joint.
+function textureQuadrillage(nom, couleurDalle, couleurJoint) {
+  const K = 8;                 // taille des dalles : une dalle mesure environ 5 × K points
+  const TRAIT = 0.9;           // épaisseur du joint, en points
+  const L = 26 * K;            // taille du motif pour qu'il se répète sans raccord visible
+  const cote = K * Math.sqrt(26);
+  const dalle = hexa(couleurDalle), joint = hexa(couleurJoint);
+  const donnees = new Uint8Array(L * L * 4);
+  for (let y = 0; y < L; y++) {
+    for (let x = 0; x < L; x++) {
+      // Position du point dans la grille tournée (a et b comptent les dalles)
+      const a = (5 * x - y) / (26 * K), b = (x + 5 * y) / (26 * K);
+      const distance = Math.min(Math.abs(a - Math.round(a)), Math.abs(b - Math.round(b))) * cote;
+      const force = Math.max(0, Math.min(1, TRAIT - distance + 0.5)); // 1 sur le joint, 0 ailleurs
+      const i = (y * L + x) * 4;
+      for (let c = 0; c < 3; c++) donnees[i + c] = Math.round(dalle[c] + (joint[c] - dalle[c]) * force);
+      donnees[i + 3] = 255;
+    }
+  }
+  carte.addImage(nom, { width: L, height: L, data: donnees });
+}
+
+function hexa(c) { return [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)); }
+
+// Un "hasard" toujours identique, pour que la texture ne change pas à chaque chargement.
+function hasard(x, y, graine) {
+  const n = Math.sin(x * 12.9898 + y * 78.233 + graine * 37.719) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function fabriquerTextures() {
+  // Trottoir : grandes dalles en losange, alignées sur les vues isométriques
+  textureQuadrillage("tex-trottoir", PALETTE.trottoir, PALETTE.trottoirJoint);
+  // Herbe : deux verts mélangés
+  texture("tex-herbe", (x, y) => hasard(x, y, 1) > 0.72 ? PALETTE.herbeFoncee : PALETTE.herbe);
+  // Bois : plus sombre et plus dense
+  texture("tex-bois", (x, y) => hasard(x, y, 2) > 0.5 ? PALETTE.bois : PALETTE.herbeFoncee);
+  // Eau : petites vagues horizontales
+  texture("tex-eau", (x, y) => (y % 4 === 0 && hasard(Math.floor(x / 3), y, 3) > 0.45) ? PALETTE.eauClaire : PALETTE.eau);
+}
+
+/* ---------- 4. Les couches de la carte, du sol vers le ciel ---------- */
+function poserLesCouches() {
+  const F = CAMERA.facteurHauteur;
+  const estSurface = ["match", ["geometry-type"], ["Polygon", "MultiPolygon"], true, false];
+  const estLigne = ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false];
+  const pasTunnel = ["!=", ["get", "brunnel"], "tunnel"];
+
+  // Largeur d'une route selon le zoom (elle double à chaque niveau, comme en vrai).
+  const largeur = (aZoom16) => ["interpolate", ["exponential", 2], ["zoom"], 12, aZoom16 / 16, 16, aZoom16, 19, aZoom16 * 8];
+  const classe = (...noms) => ["match", ["get", "class"], noms, true, false];
+  const largeurRoute = ["match", ["get", "class"],
+    ["motorway", "trunk", "primary"], 1.6,
+    ["secondary", "tertiary"], 1.25,
+    ["service", "track"], 0.55,
+    1];
+  const fois = (expr, base) => ["interpolate", ["exponential", 2], ["zoom"],
+    12, ["*", expr, base / 16], 16, ["*", expr, base], 19, ["*", expr, base * 8]];
+
+  // Le trottoir : tout le sol de la ville
+  carte.addLayer({ id: "trottoir", type: "background", paint: { "background-pattern": "tex-trottoir" } });
+
+  // Parcs, pelouses et bois
+  carte.addLayer({ id: "parcs", type: "fill", source: "osm", "source-layer": "park", filter: estSurface,
+    paint: { "fill-pattern": "tex-herbe" } });
+  carte.addLayer({ id: "pelouses", type: "fill", source: "osm", "source-layer": "landcover",
+    filter: ["==", ["get", "class"], "grass"], paint: { "fill-pattern": "tex-herbe" } });
+  carte.addLayer({ id: "bois", type: "fill", source: "osm", "source-layer": "landcover",
+    filter: ["==", ["get", "class"], "wood"], paint: { "fill-pattern": "tex-bois" } });
+
+  // L'eau
+  carte.addLayer({ id: "eau", type: "fill", source: "osm", "source-layer": "water", filter: pasTunnel,
+    paint: { "fill-pattern": "tex-eau" } });
+
+  // Places et zones piétonnes dessinées comme des surfaces
+  carte.addLayer({ id: "places", type: "fill", source: "osm", "source-layer": "transportation", filter: estSurface,
+    paint: { "fill-color": PALETTE.bordure } });
+
+  // Allées piétonnes
+  carte.addLayer({ id: "allees", type: "line", source: "osm", "source-layer": "transportation", minzoom: 14,
+    filter: ["all", estLigne, pasTunnel, classe("path", "pedestrian")],
+    layout: { "line-cap": "butt", "line-join": "miter" },
+    paint: { "line-color": PALETTE.allee, "line-width": largeur(4) } });
+
+  // Les routes : d'abord la bordure de granit (plus large), puis le bitume par-dessus
+  const filtreRoutes = ["all", estLigne, pasTunnel,
+    classe("motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service", "track")];
+  carte.addLayer({ id: "routes-bordure", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
+    layout: { "line-cap": "square", "line-join": "miter" },
+    paint: { "line-color": PALETTE.bordure, "line-width": fois(largeurRoute, 15) } });
+  carte.addLayer({ id: "routes-bitume", type: "line", source: "osm", "source-layer": "transportation", filter: filtreRoutes,
+    layout: { "line-cap": "square", "line-join": "miter" },
+    paint: { "line-color": PALETTE.chaussee, "line-width": fois(largeurRoute, 11) } });
+
+  // Ligne blanche en pointillés au milieu des grands axes
+  carte.addLayer({ id: "routes-marquage", type: "line", source: "osm", "source-layer": "transportation", minzoom: 15,
+    filter: ["all", estLigne, pasTunnel, classe("primary", "secondary", "trunk")],
+    paint: { "line-color": PALETTE.marquage, "line-width": largeur(1), "line-dasharray": [4, 4] } });
+
+  // Voies ferrées
+  carte.addLayer({ id: "rails", type: "line", source: "osm", "source-layer": "transportation",
+    filter: ["all", estLigne, pasTunnel, classe("rail", "transit")],
+    paint: { "line-color": PALETTE.rail, "line-width": largeur(3), "line-dasharray": [1, 1] } });
+
+  // ----- Les bâtiments en blocs -----
+  // Hauteur réelle arrondie au palier supérieur, puis réduite par le facteur de hauteur.
+  const hauteurReelle = ["coalesce", ["get", "render_height"], 10];
+  const hauteur = ["*", F, ["*", PALIER, ["ceil", ["/", hauteurReelle, PALIER]]]];
+  const base = ["*", F, ["coalesce", ["get", "render_min_height"], 0]];
+  const epaisseurToit = F * PALIER * 0.75; // le dernier bloc est le toit
+  const basDuToit = ["max", base, ["-", hauteur, epaisseurToit]];
+  // Un numéro de 0 à 4 par bâtiment, pour varier les pierres d'un immeuble à l'autre.
+  const numero = ["%", ["round", hauteurReelle], 5];
+  const visible = ["!", ["has", "hide_3d"]];
+
+  // Les murs : pierre de taille, une teinte par immeuble
+  carte.addLayer({ id: "murs", type: "fill-extrusion", source: "osm", "source-layer": "building", minzoom: 13, filter: visible,
+    paint: {
+      "fill-extrusion-color": ["match", numero, 0, PALETTE.pierres[0], 1, PALETTE.pierres[1], 2, PALETTE.pierres[2], 3, PALETTE.pierres[3], PALETTE.pierres[4]],
+      "fill-extrusion-height": basDuToit,
+      "fill-extrusion-base": base,
+      "fill-extrusion-vertical-gradient": false
+    } });
+
+  // Le toit : un bloc de zinc ou d'ardoise posé sur les murs
+  carte.addLayer({ id: "toits", type: "fill-extrusion", source: "osm", "source-layer": "building", minzoom: 13, filter: visible,
+    paint: {
+      "fill-extrusion-color": ["match", numero, 1, PALETTE.ardoise, 3, PALETTE.zincClair, 4, PALETTE.terrasse, PALETTE.zinc],
+      "fill-extrusion-height": hauteur,
+      "fill-extrusion-base": basDuToit,
+      "fill-extrusion-vertical-gradient": false
+    } });
+
+  // La lumière : fixe par rapport à l'écran, assez franche pour bien marquer les faces des blocs.
+  carte.setLight({ anchor: "viewport", position: [1.4, 215, 40], intensity: 0.5, color: "#fff6e6" });
+}
+
+/* ---------- 5. Les 4 vues isométriques ---------- */
+let vueActuelle = 0;
+
+function allerALaVue(numero) {
+  vueActuelle = (numero + 4) % 4; // après la vue 4 on revient à la vue 1
+  carte.rotateTo(CAMERA.vues[vueActuelle], { duration: 700 });
+  document.getElementById("vue-numero").textContent = "Vue " + (vueActuelle + 1) + "/4";
+}
+
+document.getElementById("vue-gauche").addEventListener("click", () => allerALaVue(vueActuelle - 1));
+document.getElementById("vue-droite").addEventListener("click", () => allerALaVue(vueActuelle + 1));
+
+/* ---------- 6. Le bouton Pixels ---------- */
+document.getElementById("pixels").addEventListener("click", (e) => {
+  modePixels = !modePixels;
+  carte.setPixelRatio(modePixels ? RESOLUTION_PIXELS : window.devicePixelRatio);
+  e.target.textContent = "Pixels : " + (modePixels ? "oui" : "non");
+});
+</script>
+</body>
+</html>
