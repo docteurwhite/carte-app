@@ -22,7 +22,8 @@
   }
   #version {
     position: fixed; z-index: 5; left: calc(10px + env(safe-area-inset-left)); top: calc(8px + env(safe-area-inset-top));
-    font-size: 11px; font-weight: 700; color: #14213d; opacity: .55; pointer-events: none;
+    font-size: 11px; font-weight: 700; color: #fff; opacity: .7; pointer-events: none;
+    text-shadow: 0 0 2px #14213d, 0 0 2px #14213d, 0 0 3px #14213d; /* lisible de jour comme de nuit */
   }
   #temps {
     position: fixed; z-index: 6; left: calc(10px + env(safe-area-inset-left)); top: calc(26px + env(safe-area-inset-top));
@@ -961,6 +962,7 @@ function allumerLesLampes() {
   if (!carte.getSource("lampes")) return;
   if (carte.getZoom() < 14.5) { carte.getSource("lampes").setData({ type: "FeatureCollection", features: [] }); return; }
   const points = new Map();
+  const toile = carte.getCanvas();
   const PAS = 40;
   carte.querySourceFeatures("osm", { sourceLayer: "transportation",
     filter: ["all", ["match", ["get", "class"], ["primary", "secondary", "tertiary", "minor"], true, false], ["!=", ["get", "brunnel"], "tunnel"]]
@@ -976,8 +978,11 @@ function allumerLesLampes() {
         let d = reste;
         while (d < long) {
           const p = [a[0] + (b[0] - a[0]) * d / long, a[1] + (b[1] - a[1]) * d / long];
-          // Deux tracés de la même rue donnent le même point : on ne le garde qu'une fois.
-          points.set(p[0].toFixed(4) + "," + p[1].toFixed(4), p);
+          // On ne garde que les lampes à l'écran ou juste autour, et une seule fois chacune
+          // (deux tracés de la même rue donnent le même point).
+          const pixel = carte.project(p);
+          if (pixel.x > -250 && pixel.y > -250 && pixel.x < toile.clientWidth + 250 && pixel.y < toile.clientHeight + 250)
+            points.set(p[0].toFixed(4) + "," + p[1].toFixed(4), p);
           d += PAS;
         }
         reste = d - long;
@@ -1011,7 +1016,9 @@ function majAmbiance() {
 
 function demarrerJourNuit() {
   poserLesLampes();
+  // Au chargement, les rues ne sont pas toujours déjà connues : on allume tout de suite, puis on réessaie.
   allumerLesLampes();
+  [800, 2500, 6000].forEach(delai => setTimeout(allumerLesLampes, delai));
   majAmbiance();
   setInterval(() => { if (heureSimulee === null) majAmbiance(); }, 60000); // en vrai : une mise à jour par minute
   carte.on("moveend", () => { setTimeout(allumerLesLampes, 500); setTimeout(allumerLesLampes, 2600); });

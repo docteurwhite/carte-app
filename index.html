@@ -22,7 +22,8 @@
   }
   #version {
     position: fixed; z-index: 5; left: calc(10px + env(safe-area-inset-left)); top: calc(8px + env(safe-area-inset-top));
-    font-size: 11px; font-weight: 700; color: #14213d; opacity: .55; pointer-events: none;
+    font-size: 11px; font-weight: 700; color: #fff; opacity: .7; pointer-events: none;
+    text-shadow: 0 0 2px #14213d, 0 0 2px #14213d, 0 0 3px #14213d; /* lisible de jour comme de nuit */
   }
   #message.cache { display: none; }
   #message { right: auto; max-width: calc(100% - 215px); }
@@ -143,7 +144,7 @@
 // Les téléphones gardent souvent une ancienne copie de la page en mémoire.
 // À chaque ouverture, on demande au site son numéro de version (fichier version.txt) :
 // s'il est différent de celui de cette page, on recharge la page toute neuve.
-const VERSION = "18";
+const VERSION = "19";
 document.getElementById("version").textContent = "v" + VERSION;
 fetch("version.txt?t=" + Date.now(), { cache: "no-store" })
   .then(r => r.ok ? r.text() : "")
@@ -153,6 +154,10 @@ fetch("version.txt?t=" + Date.now(), { cache: "no-store" })
     if (enLigne && enLigne !== VERSION && !dejaTente) location.replace(location.pathname + "?v=" + enLigne);
   })
   .catch(() => {});
+
+// L'heure utilisée pour l'ambiance : null = on suit l'heure du téléphone.
+// (Pour essayer une autre heure, la page de test jour-nuit.html a une molette du temps.)
+let heureSimulee = null;
 
 /* ---------- 1. La caméra (réglages validés) ---------- */
 const CAMERA = {
@@ -243,13 +248,14 @@ carte.on("load", () => {
     attente2 = setTimeout(rafraichir, 2500);
   });
   requestAnimationFrame(animerLesVehicules);
+  demarrerJourNuit();
 });
 
 /* ---------- 3. La pelouse tondue en damier ---------- */
 // Un damier de deux verts très proches, tourné pour suivre les vues isométriques.
-function fabriquerTexturePelouse() {
-  const K = 5, L = 26 * K; // une bande mesure environ 5 × K points de large
-  const vert1 = hexa(PALETTE.herbe), vert2 = hexa(PALETTE.herbeTonte);
+function imagePelouse(vertA, vertB) {
+  const K = 5, L = 26 * K; // une case du damier mesure environ 5 × K points
+  const vert1 = hexa(vertA), vert2 = hexa(vertB);
   const donnees = new Uint8Array(L * L * 4);
   for (let y = 0; y < L; y++) {
     for (let x = 0; x < L; x++) {
@@ -259,7 +265,10 @@ function fabriquerTexturePelouse() {
       donnees[i] = c[0]; donnees[i + 1] = c[1]; donnees[i + 2] = c[2]; donnees[i + 3] = 255;
     }
   }
-  carte.addImage("tex-pelouse", { width: L, height: L, data: donnees });
+  return { width: L, height: L, data: donnees };
+}
+function fabriquerTexturePelouse() {
+  carte.addImage("tex-pelouse", imagePelouse(PALETTE.herbe, PALETTE.herbeTonte));
 }
 
 function hexa(c) { return [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)); }
@@ -478,11 +487,11 @@ function planterLesArbres() {
       const h = (m) => m * taille * F * 1.6;             // hauteurs un peu exagérées pour bien voir les arbres
       formes.push(
         { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "ombre" } },
-        { type: "Feature", geometry: octogone(lng, lat, 0.7), properties: { type: "tronc", bas: 0, haut: h(3.5), couleur: PALETTE.tronc } },
+        { type: "Feature", geometry: octogone(lng, lat, 0.7), properties: { type: "tronc", teinte, bas: 0, haut: h(3.5) } },
         // La boule : trois rondelles empilées, la plus large au milieu.
-        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.72), properties: { type: "feuilles", bas: h(3), haut: h(4.6), couleur: PALETTE.feuillage[teinte] } },
-        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "feuilles", bas: h(4.6), haut: h(8), couleur: PALETTE.feuillage[teinte] } },
-        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.7), properties: { type: "feuilles", bas: h(8), haut: h(9.6), couleur: PALETTE.feuillageHaut[teinte] } }
+        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.72), properties: { type: "bas", teinte, bas: h(3), haut: h(4.6) } },
+        { type: "Feature", geometry: octogone(lng, lat, rayon), properties: { type: "bas", teinte, bas: h(4.6), haut: h(8) } },
+        { type: "Feature", geometry: octogone(lng, lat, rayon * 0.7), properties: { type: "haut", teinte, bas: h(8), haut: h(9.6) } }
       );
       compte++;
     }
@@ -686,9 +695,7 @@ document.getElementById("vue-droite").addEventListener("click", () => allerALaVu
 /* ---------- Le tableau de bord ---------- */
 // L'heure : celle du téléphone.
 function majHeure() {
-  const d = new Date();
-  document.getElementById("hud-heure").textContent =
-    String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  if (typeof heureCourante === "function") document.getElementById("hud-heure").textContent = texteHeure(heureCourante());
 }
 majHeure();
 setInterval(majHeure, 5000);
@@ -779,6 +786,226 @@ boutonLocaliser.addEventListener("click", () => {
     { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
   );
 });
+
+/* =========================================================
+   JOUR ET NUIT
+   La carte change de couleurs selon l'heure : aube, jour, crépuscule, nuit.
+   ========================================================= */
+
+/* ---------- A. Les palettes ---------- */
+function melanger(c1, c2, t) { // mélange deux couleurs : t = 0 donne c1, t = 1 donne c2
+  const a = hexa(c1), b = hexa(c2);
+  return "#" + a.map((v, i) => Math.round(v + (b[i] - v) * t).toString(16).padStart(2, "0")).join("");
+}
+function teinter(palette, couleur, force, sombre) { // une palette colorée par une lumière (rose, orange…)
+  const f = (c) => melanger(melanger(c, couleur, force), "#000000", sombre);
+  const p = {};
+  for (const cle in palette) p[cle] = Array.isArray(palette[cle]) ? palette[cle].map(f) : f(palette[cle]);
+  return p;
+}
+function melangerPalettes(p1, p2, t) {
+  const p = {};
+  for (const cle in p1) p[cle] = Array.isArray(p1[cle]) ? p1[cle].map((c, i) => melanger(c, p2[cle][i], t)) : melanger(p1[cle], p2[cle], t);
+  return p;
+}
+
+const PALETTE_NUIT = {
+  sol:          "#27355a", // cours et places
+  allee:        "#3b4a72",
+  route:        "#1a2440", // chaussée très sombre
+  trottoir:     "#35456e",
+  routeBord:    "#566796",
+  marquage:     "#8090ba",
+  herbe:        "#2d5a55",
+  herbeTonte:   "#29524e",
+  terrain:      "#2f6a66",
+  terrainLigne: "#8fb0c0",
+  eau:          "#3f70b0", // un peu claire, comme un reflet de lune
+  rail:         "#4a5578",
+  murs:         ["#6f80ad", "#6878a4", "#7788b6", "#62729c", "#6c7ca8"],
+  toits:        ["#9aa8cf", "#a3b0d6", "#8f9dc6", "#93a0c4", "#98a6cd"], // toits clairs : les immeubles se détachent
+  tronc:        "#2c2f45",
+  feuillage:    ["#1f4a48", "#234f4c", "#1b4442"],
+  feuillageHaut:["#2f6460", "#346a65", "#2a5c58"],
+  ombre:        "#0b1230"
+};
+
+const AMBIANCES = {
+  nuit:       { palette: PALETTE_NUIT,                               lumiere: "#b8c8ff", force: 0.25, ombres: 0,    lampes: 1 },
+  aube:       { palette: teinter(PALETTE, "#ffb9ad", 0.17, 0.04),    lumiere: "#ffe9e2", force: 0.34, ombres: 0.16, lampes: 0.25 },
+  jour:       { palette: PALETTE,                                    lumiere: "#ffffff", force: 0.42, ombres: 0.26, lampes: 0 },
+  crepuscule: { palette: teinter(PALETTE, "#ff9a58", 0.19, 0.06),    lumiere: "#ffe3c9", force: 0.34, ombres: 0.18, lampes: 0.35 }
+};
+
+/* ---------- B. Lever et coucher du soleil (calculés, sans connexion) ---------- */
+// Formule astronomique simplifiée : donne les heures locales du lever et du coucher
+// pour la date du jour et l'endroit affiché au centre de la carte.
+function soleil(date, lat, lng) {
+  const rad = Math.PI / 180;
+  const debutAnnee = Date.UTC(date.getFullYear(), 0, 0);
+  const jour = Math.floor((Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) - debutAnnee) / 86400000);
+  const g = 2 * Math.PI / 365 * (jour - 1);
+  const equation = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+  const declinaison = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g);
+  const cosAngle = (Math.cos(90.833 * rad) - Math.sin(lat * rad) * Math.sin(declinaison)) / (Math.cos(lat * rad) * Math.cos(declinaison));
+  const demiJournee = Math.acos(Math.max(-1, Math.min(1, cosAngle))) / rad * 4; // en minutes
+  const decalageLocal = -date.getTimezoneOffset();                               // minutes d'avance sur l'heure universelle
+  const midi = 720 - 4 * lng - equation + decalageLocal;
+  return { lever: (midi - demiJournee) / 60, coucher: (midi + demiJournee) / 60 };
+}
+
+/* ---------- C. Quelle ambiance à quelle heure ---------- */
+// Renvoie l'ambiance mélangée pour une heure donnée (de 0 à 24).
+function ambianceA(heure) {
+  const centre = carte.getCenter();
+  const { lever, coucher } = soleil(new Date(), centre.lat, centre.lng);
+  // Les étapes de la journée : entre deux étapes, tout glisse progressivement.
+  const etapes = [
+    [lever - 0.9, "nuit"], [lever, "aube"], [lever + 1.0, "jour"],
+    [coucher - 1.0, "jour"], [coucher, "crepuscule"], [coucher + 0.9, "nuit"]
+  ];
+  let a = AMBIANCES.nuit, b = AMBIANCES.nuit, t = 0;
+  for (let i = 0; i < etapes.length - 1; i++) {
+    if (heure >= etapes[i][0] && heure < etapes[i + 1][0]) {
+      a = AMBIANCES[etapes[i][1]]; b = AMBIANCES[etapes[i + 1][1]];
+      t = (heure - etapes[i][0]) / (etapes[i + 1][0] - etapes[i][0]);
+    }
+  }
+  const mix = (x, y) => x + (y - x) * t;
+  // Où en est le soleil dans sa course : 0 au lever, 0,5 à midi, 1 au coucher.
+  const course = Math.max(0, Math.min(1, (heure - lever) / (coucher - lever)));
+  return {
+    palette: melangerPalettes(a.palette, b.palette, t),
+    lumiere: melanger(a.lumiere, b.lumiere, t),
+    force: mix(a.force, b.force), ombres: mix(a.ombres, b.ombres), lampes: mix(a.lampes, b.lampes),
+    course, lever, coucher
+  };
+}
+
+/* ---------- D. Appliquer une ambiance à la carte ---------- */
+function appliquerAmbiance(amb) {
+  const P = amb.palette;
+  const peindre = (couche, propriete, valeur) => { if (carte.getLayer(couche)) carte.setPaintProperty(couche, propriete, valeur); };
+  const numero = ["%", ["round", ["coalesce", ["get", "render_height"], 10]], 5];
+  const choisir = (liste) => ["match", numero, 0, liste[0], 1, liste[1], 2, liste[2], 3, liste[3], liste[4]];
+  const decalage = (x, y) => ["interpolate", ["exponential", 2], ["zoom"], 13, ["literal", [x / 8, y / 8]], 16, ["literal", [x, y]], 19, ["literal", [x * 8, y * 8]]];
+
+  peindre("sol", "background-color", P.sol);
+  ["trottoirs", "trottoirs-immeubles", "trottoirs-rue"].forEach(c => peindre(c, "line-color", P.trottoir));
+  peindre("trottoirs-immeubles-fond", "fill-color", P.trottoir);
+  peindre("terrains", "fill-color", P.terrain);
+  peindre("terrains-lignes", "line-color", P.terrainLigne);
+  peindre("eau", "fill-color", P.eau);
+  peindre("places", "fill-color", P.allee);
+  peindre("allees", "line-color", P.allee);
+  peindre("routes-bord", "line-color", P.routeBord);
+  peindre("routes", "line-color", P.route);
+  peindre("routes-marquage", "line-color", P.marquage);
+  peindre("rails", "line-color", P.rail);
+  peindre("murs", "fill-extrusion-color", choisir(P.murs));
+  peindre("toits", "fill-extrusion-color", choisir(P.toits));
+  // Les arbres portent seulement leur "partie" et leur "teinte" : la couleur vient de la palette.
+  peindre("arbres", "fill-extrusion-color", ["match", ["get", "type"],
+    "tronc", P.tronc,
+    "haut", ["match", ["get", "teinte"], 0, P.feuillageHaut[0], 1, P.feuillageHaut[1], P.feuillageHaut[2]],
+    ["match", ["get", "teinte"], 0, P.feuillage[0], 1, P.feuillage[1], P.feuillage[2]]]);
+
+  // La pelouse est une image : on la redessine avec les verts du moment.
+  if (carte.hasImage("tex-pelouse")) carte.updateImage("tex-pelouse", imagePelouse(P.herbe, P.herbeTonte));
+
+  // Les ombres suivent le soleil : il se lève à l'est, passe au sud à midi, se couche à l'ouest.
+  // L'ombre part du côté opposé, et elle est longue le matin et le soir, courte à midi.
+  const directionSoleil = (90 + 180 * amb.course) * Math.PI / 180;
+  const longueur = 4 + 13 * Math.pow(Math.abs(2 * amb.course - 1), 1.6);
+  const ox = -Math.sin(directionSoleil) * longueur, oy = Math.cos(directionSoleil) * longueur;
+  ["ombres-batiments", "ombres-arbres"].forEach(c => {
+    peindre(c, "fill-extrusion-color", P.ombre);
+    peindre(c, "fill-extrusion-opacity", amb.ombres);
+    peindre(c, "fill-extrusion-translate-anchor", "map"); // l'ombre tourne avec la carte quand on change de vue
+    peindre(c, "fill-extrusion-translate", decalage(ox * (c === "ombres-arbres" ? 0.75 : 1), oy * (c === "ombres-arbres" ? 0.75 : 1)));
+  });
+
+  // Les lampadaires s'allument à la tombée de la nuit.
+  peindre("lampes-halo", "circle-opacity", 0.5 * amb.lampes);
+  peindre("lampes-point", "circle-opacity", amb.lampes);
+
+  carte.setLight({ anchor: "viewport", position: [1.5, 215, 55], intensity: amb.force, color: amb.lumiere });
+  document.getElementById("carte").style.background = P.sol;
+}
+
+/* ---------- E. Les lampadaires ---------- */
+// Un halo de lumière chaude tous les 40 m environ le long des rues (positions inventées :
+// les données ne disent pas où sont les vrais lampadaires).
+function poserLesLampes() {
+  const largeur = (aZoom16) => ["interpolate", ["exponential", 2], ["zoom"], 12, aZoom16 / 16, 16, aZoom16, 19, aZoom16 * 8];
+  carte.addSource("lampes", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  carte.addLayer({ id: "lampes-halo", type: "circle", source: "lampes", minzoom: 14.5,
+    paint: { "circle-color": "#ffd27a", "circle-radius": largeur(17), "circle-blur": 1, "circle-opacity": 0,
+             "circle-pitch-alignment": "map", "circle-pitch-scale": "map" } }, "ombres-batiments");
+  carte.addLayer({ id: "lampes-point", type: "circle", source: "lampes", minzoom: 15.5,
+    paint: { "circle-color": "#fff3c4", "circle-radius": largeur(1.6), "circle-blur": 0.3, "circle-opacity": 0,
+             "circle-pitch-alignment": "map", "circle-pitch-scale": "map" } }, "ombres-batiments");
+}
+
+function allumerLesLampes() {
+  if (!carte.getSource("lampes")) return;
+  if (carte.getZoom() < 14.5) { carte.getSource("lampes").setData({ type: "FeatureCollection", features: [] }); return; }
+  const points = new Map();
+  const toile = carte.getCanvas();
+  const PAS = 40;
+  carte.querySourceFeatures("osm", { sourceLayer: "transportation",
+    filter: ["all", ["match", ["get", "class"], ["primary", "secondary", "tertiary", "minor"], true, false], ["!=", ["get", "brunnel"], "tunnel"]]
+  }).forEach(f => {
+    const lignes = f.geometry.type === "LineString" ? [f.geometry.coordinates]
+                 : f.geometry.type === "MultiLineString" ? f.geometry.coordinates : [];
+    lignes.forEach(ligne => {
+      let reste = PAS / 2;
+      for (let i = 1; i < ligne.length; i++) {
+        const a = ligne[i - 1], b = ligne[i];
+        const k = mParDegLng(a[1]);
+        const long = Math.hypot((b[0] - a[0]) * k, (b[1] - a[1]) * M_PAR_DEG_LAT);
+        let d = reste;
+        while (d < long) {
+          const p = [a[0] + (b[0] - a[0]) * d / long, a[1] + (b[1] - a[1]) * d / long];
+          // On ne garde que les lampes à l'écran ou juste autour, et une seule fois chacune
+          // (deux tracés de la même rue donnent le même point).
+          const pixel = carte.project(p);
+          if (pixel.x > -250 && pixel.y > -250 && pixel.x < toile.clientWidth + 250 && pixel.y < toile.clientHeight + 250)
+            points.set(p[0].toFixed(4) + "," + p[1].toFixed(4), p);
+          d += PAS;
+        }
+        reste = d - long;
+      }
+    });
+  });
+  const formes = [...points.values()].slice(0, 900).map(p => ({ type: "Feature", geometry: { type: "Point", coordinates: p }, properties: {} }));
+  carte.getSource("lampes").setData({ type: "FeatureCollection", features: formes });
+}
+
+/* ---------- F. Suivre l'heure réelle ---------- */
+function heureCourante() {
+  if (heureSimulee !== null) return heureSimulee;
+  const d = new Date();
+  return d.getHours() + d.getMinutes() / 60;
+}
+function texteHeure(h) {
+  const minutes = Math.round(h * 60) % 1440;
+  return String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0");
+}
+function majAmbiance() {
+  appliquerAmbiance(ambianceA(heureCourante()));
+}
+
+function demarrerJourNuit() {
+  poserLesLampes();
+  // Au chargement, les rues ne sont pas toujours déjà connues : on allume tout de suite, puis on réessaie.
+  allumerLesLampes();
+  [800, 2500, 6000].forEach(delai => setTimeout(allumerLesLampes, delai));
+  majAmbiance();
+  setInterval(majAmbiance, 60000);                                     // une mise à jour par minute
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) majAmbiance(); }); // et au retour dans l'app
+  carte.on("moveend", () => { setTimeout(allumerLesLampes, 500); setTimeout(allumerLesLampes, 2600); });
+}
 </script>
 </body>
 </html>
