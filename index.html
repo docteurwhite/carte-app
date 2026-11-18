@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>Carte maquette, Paris</title>
+<title>Carte</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
 <style>
   /* La page elle-même ne doit ni zoomer ni défiler : seule la carte bouge. */
@@ -21,6 +21,47 @@
     box-shadow: 0 4px 16px rgba(20,33,61,.18);
   }
   #message.cache { display: none; }
+  #message { right: auto; max-width: calc(100% - 215px); }
+
+  /* ---------- Le tableau de bord façon jeu vidéo ---------- */
+  /* Pas de fond : chaque élément flotte sur la carte, avec un contour foncé pour rester lisible. */
+  #hud {
+    --contour: #14213d;
+    position: fixed; z-index: 6; pointer-events: none;
+    top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+    width: 178px; transform-origin: top right;
+    font-family: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif;
+    font-weight: 900; font-variant-numeric: tabular-nums; color: #fff;
+  }
+  #hud .haut { display: flex; gap: 10px; align-items: stretch; }
+  #hud .objet {
+    width: 60px; height: 60px; flex: none; border-radius: 12px;
+    border: 3px solid #fff; outline: 2.5px solid var(--contour);
+    background: rgba(20,33,61,.28);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #hud .droite { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
+  #hud .texte {
+    text-shadow: -2px -2px 0 var(--contour), 2px -2px 0 var(--contour), -2px 2px 0 var(--contour), 2px 2px 0 var(--contour),
+                 0 -2px 0 var(--contour), 0 2px 0 var(--contour), -2px 0 0 var(--contour), 2px 0 0 var(--contour);
+  }
+  #hud .heure { font-size: 25px; line-height: 1; text-align: right; letter-spacing: 1px; }
+  #hud .barre {
+    height: 10px; border-radius: 3px; border: 2.5px solid var(--contour);
+    background: rgba(20,33,61,.35); overflow: hidden;
+  }
+  #hud .barre i { display: block; height: 100%; }
+  #hud .armure i { background: #ffffff; }
+  #hud .vie i { background: #e5484d; }
+  #hud .credits {
+    margin-top: 8px; display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+    font-size: 23px; line-height: 1; letter-spacing: 1.5px; color: #ffd24a;
+  }
+  #hud .piece {
+    width: 20px; height: 20px; border-radius: 50%; flex: none;
+    background: #ffd24a; border: 2.5px solid var(--contour); box-shadow: inset -2px -2px 0 #e0a520;
+  }
+  @media (min-width: 900px) { #hud { transform: scale(1.3); top: 20px; right: 20px; } }
   #vues {
     position: fixed; right: calc(12px + env(safe-area-inset-right)); bottom: calc(44px + env(safe-area-inset-bottom)); z-index: 5;
     display: flex; align-items: center; gap: 6px;
@@ -54,6 +95,25 @@
 
 <div id="carte"></div>
 <div id="message">Chargement de la carte…</div>
+<div id="hud" aria-label="Tableau de bord">
+  <div class="haut">
+    <div class="objet" title="Objet en main">
+      <!-- l'objet équipé : ici un sac à dos -->
+      <svg width="38" height="38" viewBox="0 0 24 24" fill="#fff" stroke="#14213d" stroke-width="1.4" stroke-linejoin="round">
+        <path d="M9 5.5V4.5a3 3 0 0 1 6 0v1"/>
+        <path d="M6 9a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z"/>
+        <path d="M9 13.5h6v4.5H9z" fill="#ffd24a"/>
+        <path d="M9 9.5h6" fill="none"/>
+      </svg>
+    </div>
+    <div class="droite">
+      <div class="heure texte" id="hud-heure">00:00</div>
+      <div class="barre armure" title="Armure"><i id="hud-armure" style="width:80%"></i></div>
+      <div class="barre vie" title="Vie"><i id="hud-vie" style="width:55%"></i></div>
+    </div>
+  </div>
+  <div class="credits"><span class="piece"></span><span class="texte" id="hud-credits">00000000</span></div>
+</div>
 <button id="localiser" type="button" aria-label="Centrer la carte sur ma position">
   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
     <circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>
@@ -373,6 +433,47 @@ function allerALaVue(numero) {
 
 document.getElementById("vue-gauche").addEventListener("click", () => allerALaVue(vueActuelle - 1));
 document.getElementById("vue-droite").addEventListener("click", () => allerALaVue(vueActuelle + 1));
+
+/* ---------- Le tableau de bord ---------- */
+// L'heure : celle du téléphone.
+function majHeure() {
+  const d = new Date();
+  document.getElementById("hud-heure").textContent =
+    String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+majHeure();
+setInterval(majHeure, 5000);
+
+// Les crédits : on part de zéro et on gagne 1 crédit par seconde tant que l'app est ouverte.
+// Le total est gardé dans le téléphone, pour le retrouver à la prochaine visite.
+const CREDITS_PAR_SECONDE = 1;
+let credits = 0;
+try { credits = parseInt(localStorage.getItem("credits"), 10) || 0; } catch (e) {}
+
+function afficherCredits() {
+  document.getElementById("hud-credits").textContent = String(credits).padStart(8, "0");
+}
+function sauverCredits() {
+  try { localStorage.setItem("credits", String(credits)); } catch (e) {}
+}
+
+afficherCredits();
+setInterval(() => {
+  if (document.hidden) return; // rien ne tombe quand l'app est en arrière-plan
+  credits += CREDITS_PAR_SECONDE;
+  afficherCredits();
+  if (credits % 5 === 0) sauverCredits();
+}, 1000);
+// On sauvegarde aussi au moment où l'on quitte la page.
+document.addEventListener("visibilitychange", sauverCredits);
+window.addEventListener("pagehide", sauverCredits);
+
+// L'armure (barre blanche) et la vie (barre rouge) : valeurs fixes pour l'instant, de 0 à 100.
+function reglerBarres(armure, vie) {
+  document.getElementById("hud-armure").style.width = armure + "%";
+  document.getElementById("hud-vie").style.width = vie + "%";
+}
+reglerBarres(80, 55);
 
 /* ---------- 7. Empêcher le navigateur de zoomer la page ---------- */
 // Sur iPhone, pincer l'écran ou toucher deux fois agrandit toute la page, boutons compris.
